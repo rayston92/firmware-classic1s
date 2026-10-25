@@ -143,8 +143,37 @@ LDFLAGS  += -L$(TOP_DIR)emulator
 LDLIBS   += -ltrezor -lemulator
 LIBDEPS  += $(TOP_DIR)/libtrezor.a $(TOP_DIR)emulator/libemulator.a
 
+# DIY builds (see diy/README.md at the repository root).
+#   DIY=1      emulator made fit to hold a real wallet: random numbers from the
+#              chip's hardware generator with health tests, connection limited
+#              to this computer, storage tied to this board.
+#   DIY_HAT=1  DIY=1 plus drawing on a Raspberry Pi OLED screen HAT and reading
+#              its keys, instead of an SDL window and the keyboard.
+DIY_HAT ?= 0
+ifeq ($(DIY_HAT),1)
+DIY := 1
+endif
+DIY ?= 0
+ifeq ($(DIY),1)
+# The makefiles don't notice changed options, so remember the last ones and
+# rebuild everything when they change (for example switching to Bitcoin only).
+DIY_FLAGS_FILE := $(TOP_DIR).diy-flags
+DIY_FLAGS := DIY_HAT=$(DIY_HAT) BITCOIN_ONLY=$(BITCOIN_ONLY) DEBUG_LINK=$(DEBUG_LINK)
+ifneq ($(shell cat $(DIY_FLAGS_FILE) 2>/dev/null),$(DIY_FLAGS))
+$(shell echo '$(DIY_FLAGS)' > $(DIY_FLAGS_FILE))
+endif
+CFLAGS   += -DDIY=1 -DRAND_PLATFORM_INDEPENDENT=1
+# Warnings stay visible but don't stop the build. Upstream code is only built
+# with x86 GCC in CI; on ARM64 (unsigned char) with GCC 14, as on Raspberry Pi
+# OS, a few string-length warnings appear in code this build doesn't change.
+CFLAGS   += -Wno-error
+endif
+ifeq ($(DIY_HAT),1)
+CFLAGS   += -DDIY_HAT=1
+else
 CFLAGS   += $(shell pkg-config --cflags sdl2 SDL2_image)
 LDLIBS   += $(shell pkg-config --libs sdl2 SDL2_image)
+endif
 
 else
 ifdef APPVER
@@ -337,5 +366,9 @@ clean::
 	rm -f ../storage/*.o
 	rm -f ../common/*.o
 	$(MAKE) -C firmware/protob clean
+
+ifdef DIY_FLAGS_FILE
+$(OBJS): $(DIY_FLAGS_FILE)
+endif
 
 -include $(OBJS:.o=.d)

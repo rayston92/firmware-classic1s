@@ -1,0 +1,16 @@
+# >>> diywallet (added by diy/install.sh)
+[all]
+# 1.3" OLED HAT: screen on SPI, joystick and keys as keyboard keys.
+dtparam=spi=on
+dtoverlay=sh1106-spi
+dtoverlay=gpio-key,gpio=5,keycode=105,label=joystick-left
+dtoverlay=gpio-key,gpio=26,keycode=106,label=joystick-right
+dtoverlay=gpio-key,gpio=6,keycode=103,label=joystick-up
+dtoverlay=gpio-key,gpio=19,keycode=108,label=joystick-down
+dtoverlay=gpio-key,gpio=13,keycode=28,label=joystick-press
+dtoverlay=gpio-key,gpio=21,keycode=28,label=key1
+dtoverlay=gpio-key,gpio=16,keycode=1,label=key3
+# USB port acts as a device, not a host.
+dtoverlay=dwc2,dr_mode=peripheral
+@RADIOS@
+# <<< diywallet

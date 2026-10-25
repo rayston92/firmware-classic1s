@@ -40,7 +40,16 @@ uint32_t __stack_chk_guard;
 
 static void setup_flash(void);
 
-void setup(void) { setup_flash(); }
+#if DIY
+void diy_harden(void);
+#endif
+
+void setup(void) {
+#if DIY
+  diy_harden();
+#endif
+  setup_flash();
+}
 
 void __attribute__((noreturn)) shutdown(void) {
   sleep(5);

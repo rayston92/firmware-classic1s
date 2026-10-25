@@ -132,8 +132,15 @@ void check_busy_screen(void) {
   }
 }
 
+#if EMULATOR && defined(DIY) && DIY
+void diy_hw_salt(uint8_t *out, size_t len);
+#endif
+
 static void collect_hw_entropy(bool privileged) {
-#if EMULATOR
+#if EMULATOR && defined(DIY) && DIY
+  (void)privileged;
+  diy_hw_salt(HW_ENTROPY_DATA, HW_ENTROPY_LEN);
+#elif EMULATOR
   (void)privileged;
   memzero(HW_ENTROPY_DATA, HW_ENTROPY_LEN);
 #else

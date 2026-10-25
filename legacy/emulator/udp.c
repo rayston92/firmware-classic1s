@@ -48,7 +48,12 @@ static int socket_setup(int port) {
   struct sockaddr_in addr = {0};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
+#if defined(DIY) && DIY
+  /* Only programs on this board may connect. The USB relay runs here too. */
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+#else
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
+#endif
 
   if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
     perror("Failed to bind socket");

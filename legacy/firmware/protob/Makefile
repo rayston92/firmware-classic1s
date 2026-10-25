@@ -51,7 +51,8 @@ messages.pb.h: $(PROTO_COMPILED) $(PROTO_OPTIONS)
 	@printf "  PROTOC  $@\n"
 	$(Q)protoc -I/usr/include -I. $< --python_out=.
 
-messages_map.h messages_map_limits.h: messages_map.py messages_pb2.py
+# DIY builds: regenerate when the build options change (see ../../Makefile.include).
+messages_map.h messages_map_limits.h: messages_map.py messages_pb2.py $(wildcard ../../.diy-flags)
 	$(Q)$(PYTHON) $< ${SKIPPED_MESSAGES}
 
 

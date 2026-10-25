@@ -1,0 +1,50 @@
+[Unit]
+Description=DIY hardware wallet (OneKey Classic firmware, DIY build)
+# Start after anything that could switch swap on, so the swapoff below wins.
+After=local-fs.target swap.target dphys-swapfile.service rpi-swap.service
+
+[Service]
+User=diywallet
+Group=diywallet
+SupplementaryGroups=video input
+@STORAGE@
+EnvironmentFile=-/etc/diywallet.conf
+# As root ("+"), before the wallet starts:
+#  - switch off swap, so nothing in memory can be written to the memory card;
+#  - detach the text console from every framebuffer, so its cursor never draws
+#    over the wallet's screen.
+ExecStartPre=+/usr/sbin/swapoff -a
+#  - check that /dev/hwrng is the Pi's Broadcom generator and that its register
+#    settings are the ones Broadcom's code uses (see hwrng-check.c); the
+#    wallet does not start otherwise.
+ExecStartPre=+/opt/diywallet/hwrng-check
+ExecStartPre=+/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$$v/name" 2>/dev/null && echo 0 > "$$v/bind"; done; true'
+ExecStart=/opt/diywallet/wallet
+Restart=always
+RestartSec=2
+
+# Keep the wallet's memory out of swap on the memory card: swap is off (above),
+# the wallet locks its memory in RAM, and memory cgroups (where enabled) forbid
+# swapping it. No core dumps, ever.
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+LimitCORE=0
+# Only what it needs: the screen, the keys, the hardware random number
+# generator, and a socket on this Pi.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+DevicePolicy=closed
+DeviceAllow=char-fb rw
+DeviceAllow=char-input r
+DeviceAllow=/dev/hwrng r
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

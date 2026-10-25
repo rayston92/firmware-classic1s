@@ -12,3 +12,4 @@ build/
 *.log
 *.o
 *.srec
+.diy-flags

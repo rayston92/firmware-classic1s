@@ -32,8 +32,15 @@
 #define OLED_NSS_HIGH gpio_set(GPIOI, GPIO0);
 #define OLED_NSS_LOW gpio_clear(GPIOI, GPIO0);
 
+#if defined(DIY) && DIY
+/* DIY builds use the real Classic screen size, so the 1.3" 128x64 OLED HAT
+   shows exactly what the device shows. */
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#else
 #define OLED_WIDTH 256
 #define OLED_HEIGHT 128
+#endif
 #define OLED_BUFSIZE (OLED_WIDTH * OLED_HEIGHT / 8)
 
 void oledInit(void);

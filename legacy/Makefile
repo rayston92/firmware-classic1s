@@ -56,6 +56,7 @@ include Makefile.include
 
 libtrezor.a:
 	@printf "  AR      $@\n"
+	$(Q)rm -f $@
 	$(Q)$(AR) rcs $@ $^
 
 .PHONY: vendor build_unix test_emu test_emu_ui test_emu_ui_record \

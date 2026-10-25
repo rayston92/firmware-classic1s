@@ -1,0 +1,13 @@
+--- a/packages/shared/src/utils/deviceUtils.ts
++++ b/packages/shared/src/utils/deviceUtils.ts
+@@ -289,7 +289,9 @@
+ 
+ // Keep all firmware verification capability checks centralized here.
+ function isFirmwareVerifySupported(_deviceType?: IDeviceType) {
+-  return true;
++  // DIY build: self-built devices have no OneKey factory certificate, so the
++  // genuine-device check can never pass. Skip it in this personal build.
++  return false;
+ }
+ 
+ async function getDeviceTypeFromFeatures({
