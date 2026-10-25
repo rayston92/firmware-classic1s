@@ -116,6 +116,24 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
 - `usb-relay.py` passed an `Initialize` request through to the wallet and the
   `Features` reply back, unchanged (endpoint files simulated with FIFOs), and
   still did after the wallet was restarted mid-session.
+- End-to-end wallet test (`diy/test/`, see its README) on the `DIY_HAT=1`
+  build, x86-64 and the ARM64 build under qemu-user. A wallet was created on
+  the device with the joystick: 12 words read off the screen, word check
+  passed, PIN set; after a restart the PIN unlocked it. Then, over the
+  wallet's UDP port with OneKey's trezorlib (the app's protocol): Bitcoin
+  addresses and account keys (legacy, nested and native SegWit, Taproot,
+  mainnet and testnet, a second account), Ethereum, Tron and Solana
+  addresses, a SegWit and a Taproot testnet transaction, an EIP-1559
+  Ethereum transaction, an Ethereum and a Bitcoin message, each confirmed
+  with the wallet's key. Every result was checked against keys derived from
+  the 12 words with embit, eth-account and eth-keys: 28 of 28 pass.
+- That test found a bug in the stock emulator code: after deriving a key in
+  software it leaves the public key empty, because on a real Classic 1S the
+  secure element fills it in. Ethereum and Tron addresses came out wrong (the
+  same address for every account) and SegWit transactions carried an
+  all-zero public key, which the network rejects. Fixed in `fsm.c` and
+  `signing.c`, for emulator builds only. Before the fix 7 of the 28 checks
+  failed.
 - `app-skip-genuine-check.patch` applies to app-monorepo tag v6.6.3.
 - `set-home-icon.py` reproduces the existing icon data byte for byte.
 
@@ -138,6 +156,9 @@ Not yet checked on real hardware:
   and the OneKey app finding the device over WebUSB.
 - Whether `fb_sh1106` or `ssd130x` binds to the screen on current Raspberry Pi
   OS kernels. Both are accepted.
+- The OneKey app itself driving the wallet. The test speaks the app's
+  protocol through OneKey's Python library, not through the app.
+- Passphrase wallets, and coins other than Bitcoin, Ethereum, Tron and Solana.
 
 ## Known limits
 

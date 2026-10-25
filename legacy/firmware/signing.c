@@ -1196,6 +1196,17 @@ static bool derive_node(InputScriptType script_type, pb_size_t address_n_count,
     signing_abort();
     return false;
   }
+#if EMULATOR
+  /* The secure element fills public_key on the real device; see
+   * fsm_getDerivedNode. Without this the SegWit witness carries an all-zero
+   * public key and the network rejects the transaction. */
+  if (hdnode_fill_public_key(&node) != 0) {
+    fsm_sendFailure(FailureType_Failure_ProcessError,
+                    "Failed to derive public key.");
+    signing_abort();
+    return false;
+  }
+#endif
 
   return true;
 }

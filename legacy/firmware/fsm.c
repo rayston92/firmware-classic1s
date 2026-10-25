@@ -336,13 +336,22 @@ HDNode *fsm_getDerivedNode(const char *curve, const uint32_t *address_n,
     layoutHome();
     return 0;
   }
-  if (!address_n || address_n_count == 0) {
-    return &node;
-  }
-  if (hdnode_private_ckd_cached(&node, address_n, address_n_count,
+  if (address_n && address_n_count > 0 &&
+      hdnode_private_ckd_cached(&node, address_n, address_n_count,
                                 fingerprint) == 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError,
                     "Failed to derive private key");
+    layoutHome();
+    return 0;
+  }
+  /* On the real device the secure element returns the public key with the
+   * node, and the code that uses this node relies on that (for example
+   * Ethereum addresses and SegWit witnesses read node->public_key directly).
+   * Here the key is derived in software, which leaves public_key empty, so
+   * fill it in the same way. */
+  if (hdnode_fill_public_key(&node) != 0) {
+    fsm_sendFailure(FailureType_Failure_ProcessError,
+                    "Failed to derive public key");
     layoutHome();
     return 0;
   }
