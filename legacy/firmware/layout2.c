@@ -811,8 +811,10 @@ static void _layout_home(bool update_menu) {
     if (session_isUnlocked() || !config_hasPin()) {
       oledDrawBitmap(52, 0, &bmp_onekey_logo);
       oledDrawStringCenterAdapter(OLED_WIDTH / 2, 29, label, FONT_STANDARD);
+#if !DIY /* no Bluetooth on the DIY wallet, so no Bluetooth name ("K0000") */
       oledDrawStringCenterAdapter(OLED_WIDTH / 2, OLED_HEIGHT - 10,
                                   ble_get_name(), FONT_STANDARD);
+#endif
     } else {
       oledDrawBitmap(128 / 2 - 4, 0, &bmp_status_locked);
       oledDrawStringCenterAdapter(OLED_WIDTH / 2, 19, label, FONT_STANDARD);
@@ -828,8 +830,10 @@ static void _layout_home(bool update_menu) {
         oledDrawStringCenterAdapter(OLED_WIDTH / 2, OLED_HEIGHT - 9,
                                     "Need Backup", FONT_STANDARD);
       } else {
+#if !DIY
         oledDrawStringCenterAdapter(OLED_WIDTH / 2, OLED_HEIGHT - 10,
                                     ble_get_name(), FONT_STANDARD);
+#endif
       }
     }
   }
@@ -3615,14 +3619,44 @@ void layouKeyValue(int y, const char *desc, const char *value) {
   oledDrawStringRightAdapter(OLED_WIDTH - 1, y, value, FONT_STANDARD);
 }
 
+#if DIY
+/* The DIY wallet has no secure chip, so the stock warning ("erase all data
+ * stored on the Secure Element (SE) and internal storage") would be wrong.
+ * Same meaning without the chip; every glyph is one the language's existing
+ * strings already use, so the font can draw it. Order as in gettextX(). */
+static const char *diy_erase_warning(void) {
+  static const char *const text[] = {
+      "This will permanently erase all wallet data on this device, including "
+      "private keys and settings.",
+      "这将永久删除本设备上的全部钱包数据，包括私钥和设置。",
+      "這將永久刪除本設備上的全部錢包數據，包括私鑰和設置。",
+      "このデバイス上のウォレットデータ（秘密鍵と設定を含む）がすべて完全に消去"
+      "されます。",
+      "Se borrarán para siempre todos los datos de la billetera en este "
+      "dispositivo, incluidas las claves privadas y los ajustes.",
+      "Isso apagará permanentemente todos os dados da carteira neste "
+      "dispositivo, incluindo chaves privadas e configurações.",
+      "Dadurch werden alle Wallet-Daten auf diesem Gerät dauerhaft gelöscht, "
+      "einschließlich privater Schlüssel und Einstellungen.",
+      "이 기기의 모든 지갑 데이터(개인 키와 설정 포함)가 영구적으로 "
+      "삭제됩니다.",
+  };
+  return text[ui_language < sizeof(text) / sizeof(text[0]) ? ui_language : 0];
+}
+#endif
+
 bool layoutEraseDevice(void) {
   uint8_t key = KEY_NULL;
   char title[64] = {0};
   strlcpy(title, _(T__WARNING_EXCLAM_BRACKET_STR_BRACKET), 64);
   bracket_replace(title, "1/2");
+#if DIY
+  key = layoutPagination(title, (char *)diy_erase_warning());
+#else
   key = layoutPagination(
       title,
       _(C__THIS_WILL_ERASE_ALL_DATA_STORED_ON_SE_AND_INTERNAL_STORAGE_INCLUDING_PRIVATE_KEYS_AND_SETTINGS));
+#endif
   if (key == KEY_CANCEL) return false;
   strlcpy(title, _(T__WARNING_EXCLAM_BRACKET_STR_BRACKET), 64);
   bracket_replace(title, "2/2");
@@ -3735,21 +3769,39 @@ void layoutDeviceParameters(int num) {
   const image_header *hdr = (const image_header *)FLASH_PTR(
       FLASH_FWHEADER_START);  // allow both v2 and v3 signatures
 
+#if EMULATOR
+  /* The emulator has no firmware image in its flash: hashing one read past
+   * the end of the flash file and crashed the wallet whenever "Device Info"
+   * was opened. Features leaves the hash out in the emulator too. */
+  (void)hdr;
+  snprintf(firmware_ver, 32, "%s[%s]", ONEKEY_VERSION,
+           (char *)BUILD_ID + strlen(BUILD_ID) - 7);
+#else
   data2hexaddr(get_firmware_hash(hdr), 4, hash_str);
   hash_str[7] = 0;
   snprintf(firmware_ver, 32, "%s[%s-%s]", ONEKEY_VERSION,
            (char *)BUILD_ID + strlen(BUILD_ID) - 7, hash_str);
+#endif
 
+#if DIY
+  /* No secure chip and no Bluetooth on the DIY wallet: say so, rather than
+   * the emulator's placeholder numbers (SE "1.1.0.0", Bluetooth "K0000"). */
+  strlcpy(se_ver, "None", sizeof(se_ver));
+#else
   data2hexaddr((uint8_t *)se_get_hash(), 4, hash_str);
   hash_str[7] = 0;
   snprintf(se_ver, 32, "%s[%s-%s]", se_get_version(), se_get_build_id(),
            hash_str);
+#endif
 
   memory_bootloader_hash(hash);
   data2hexaddr(hash, 4, hash_str);
   hash_str[7] = 0;
   snprintf(boot_version, 32, "%s[%s]", bootloader_version, hash_str);
 
+#if DIY
+  strlcpy(bt_ver, "None", sizeof(bt_ver));
+#else
   if (ble_build_id_state() && ble_hash_state()) {
     data2hexaddr((uint8_t *)ble_get_hash(), 4, hash_str);
     hash_str[7] = 0;
@@ -3758,6 +3810,7 @@ void layoutDeviceParameters(int num) {
   } else {
     snprintf(bt_ver, 32, "%s", ble_get_ver());
   }
+#endif
 
 refresh_menu:
   y = 9;
@@ -3776,7 +3829,11 @@ refresh_menu:
       oledDrawStringAdapter(0, y, _(I__BLUETOOTH_NAME_UPPERCASE_COLON),
                             FONT_STANDARD);
       y += font->pixel + 1;
+#if DIY
+      oledDrawStringAdapter(0, y, "None", FONT_STANDARD);
+#else
       oledDrawStringAdapter(0, y, ble_get_name(), FONT_STANDARD);
+#endif
 
       break;
     case 1:

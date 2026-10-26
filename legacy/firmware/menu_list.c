@@ -318,6 +318,12 @@ static struct menu settings_menu = {
 };
 
 void menu_init_settings_menu(void) {
+#if DIY
+  /* No Bluetooth on the DIY wallet: leave its switch out of the menu. */
+  settings_menu.items = (struct menu_item *)settings_menu_items_pure + 1;
+  settings_menu.counts = COUNT_OF(settings_menu_items_pure) - 1;
+  return;
+#endif
   if (ble_hw_ver_is_pure()) {
     settings_menu.items = (struct menu_item *)settings_menu_items_pure;
     settings_menu.counts = COUNT_OF(settings_menu_items_pure);
@@ -650,7 +656,11 @@ static struct menu safety_checks_set_menu = {
 
 static const struct menu_item about_menu_items[] = {
     {"Device Info", NULL, true, layoutDeviceParameters, NULL, false, NULL},
+#if !DIY
+    /* OneKey's FCC / ANATEL marks belong to OneKey's hardware, not to a
+     * Raspberry Pi someone built at home. */
     {"Certification", NULL, true, layoutAboutCertifications, NULL, false, NULL},
+#endif
     {"Trezor Compat", NULL, false, .sub_menu = &trezor_compatibility_set_menu,
      menu_para_trezor_comp_mode_state, true, menu_para_trezor_comp_mode_index},
     {"Safety Checks", NULL, false, .sub_menu = &safety_checks_set_menu,

@@ -63,6 +63,8 @@ To test the ARM64 build under qemu-user, build both shims with
 | `message_sweep.py` | Sends every message type once with minimal contents and watches for crashes and freezes |
 | `display_check.py` | What the screen shows against what is signed: long Ethereum data, a short first data chunk, a Tron contract call carrying TRX, Solana transfer and stake withdrawal, a message with a hidden zero byte |
 | `addresses_check.py` | Addresses for Litecoin, Dogecoin, Cosmos, XRP, Filecoin, Stellar, Aptos, Sui, Near and Algorand against independent derivation |
+| `rng_failures.py` | The production wallet started with a broken random number source (missing, replaced by `/dev/urandom` or a file, stuck, biased, failing after the warm-up, another driver, the kernel's generator failing): it must stop with "Random number generator failed" every time, and start normally with a working one |
+| `passphrase_check.py` | 12-, 18- and 24-word phrases with empty, plain, 50-byte and non-English passphrases give the same Bitcoin and Ethereum addresses as independent derivation; a 51-byte passphrase is refused, not cut short |
 | `autolock_check.py` | Auto-lock from the home screen and the menus, an open prompt staying usable, the delay set from the app (production build, about 7 minutes) |
 
 `run-check.sh` starts a wallet, runs one of these against it and stops it, in
@@ -70,7 +72,7 @@ its own network namespace. `unlock_then.py` enters the PIN on the wallet's
 screen (`pin_entry.py` reads the digit wheel from the screenshots) and then
 runs a check, for production builds started from a saved storage file.
 
-`psbt_check.py`, `nostr_check.py`, `display_check.py` and `addresses_check.py` load a test phrase through the debug
+`psbt_check.py`, `nostr_check.py`, `display_check.py`, `addresses_check.py` and `passphrase_check.py` load a test phrase through the debug
 interface, so they need a test build (`DEBUG_LINK=1
 DIY_TEST_BUILD_WITH_DEBUG_LINK=1`, never for real use). Given the words of a
 production wallet that is already set up and unlocked as a second argument,
