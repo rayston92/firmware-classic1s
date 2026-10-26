@@ -631,7 +631,15 @@ void fsm_abortWorkflows(void) {
   unlock_path = 0;
 #if !BITCOIN_ONLY
   ethereum_signing_abort();
+  ethereum_signing_abort_onekey();
   stellar_signingAbort();
+  // Multi-message signing sessions of these chains must not survive an
+  // Initialize, a Cancel or the device locking (from OneKey 3.21).
+  alephium_signing_abort();
+  kaspa_signing_abort();
+  scdo_signing_abort();
+  conflux_signing_abort();
+  nervos_signing_abort();
 #endif
 }
 

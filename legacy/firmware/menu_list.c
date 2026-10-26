@@ -83,14 +83,16 @@ void menu_set_passphrase(int index) {
 
   uint8_t key = KEY_NULL;
   char title[32] = {0};
+  /* index 1 = "Disable". The titles used to be swapped, so disabling showed
+   * "Enable Passphrase" above the "disable" question. */
   if (index) {
-    snprintf(title, 32, "%s %s", _(O__ENABLE), _(M__PASSPHRASE));
+    snprintf(title, 32, "%s %s", _(O__DISABLE), _(M__PASSPHRASE));
     layoutDialogCenterAdapterV2(
         title, NULL, &bmp_bottom_left_close, &bmp_bottom_right_confirm, NULL,
         NULL, NULL, NULL, NULL, NULL,
         _(C__DO_YOU_WANT_TO_DISABLE_PASSPHRASE_ENCRYPTION));
   } else {
-    snprintf(title, 32, "%s %s", _(O__DISABLE), _(M__PASSPHRASE));
+    snprintf(title, 32, "%s %s", _(O__ENABLE), _(M__PASSPHRASE));
     layoutDialogCenterAdapterV2(
         title, NULL, &bmp_bottom_left_close, &bmp_bottom_right_confirm, NULL,
         NULL, NULL, NULL, NULL, NULL,

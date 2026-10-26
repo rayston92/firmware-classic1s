@@ -76,15 +76,18 @@ void fsm_msgStellarSignTx(const StellarSignTx *msg) {
     return;
   }
 
+  // stellar_signingInit() has sent the Failure itself; a second one would be
+  // read as the reply to the computer's next request.
   if (!stellar_signingInit(msg)) {
-    fsm_sendFailure(FailureType_Failure_ProcessError,
-                    "Failed to derive private key");
     layoutHome();
     return;
   }
 
-  // Confirm transaction basics
-  stellar_layoutTransactionSummary(msg);
+  // Confirm transaction basics. If the user rejects them a Failure has been
+  // sent already, so do not ask for the first operation.
+  if (!stellar_layoutTransactionSummary(msg)) {
+    return;
+  }
 
   // Respond with a request for the first operation
   RESP_INIT(StellarTxOpRequest);

@@ -111,13 +111,17 @@ int ser_string(const uint8_t* src, size_t count, BufferWriter* writer) {
 }
 
 int deser_string_to_buffer_reader(BufferReader* f, BufferReader* out_reader) {
-  uint8_t buffer[1024];
-  size_t length;
-  if (!deser_string(f, buffer, sizeof(buffer), &length)) {
+  /* Point the new reader at the value inside f's own buffer. This used to
+   * copy the value into a local array and hand back a reader pointing at
+   * that array, which no longer exists once this function returns, so later
+   * calls could overwrite the bytes before they were read. Same limits as
+   * before: not empty, at most 1024 bytes, within what is left of f. */
+  uint64_t length = deser_compact_size(f);
+  if (length == 0 || length > f->length - f->position || length > 1024) {
     return 0;
   }
-
-  init_buffer_reader(out_reader, buffer, length);
+  init_buffer_reader(out_reader, f->buffer + f->position, (size_t)length);
+  f->position += (size_t)length;
   return 1;
 }
 
@@ -195,6 +199,14 @@ bool deser_hd_keypath(BufferReader* key_origin_info_reader,
   size_t key_origin_info_reader_len =
       key_origin_info_reader->length - key_origin_info_reader->position;
   if (key_origin_info_reader_len % 4 != 0) return false;
+  /* The path array holds 8 levels. Without this check a longer path from the
+   * computer was written past the end of the array (and an empty one made
+   * path_len wrap around). */
+  if (key_origin_info_reader_len < 4 ||
+      key_origin_info_reader_len / 4 - 1 >
+          sizeof(key_origin->path) / sizeof(key_origin->path[0])) {
+    return false;
+  }
   if (!read_bytes(key_origin_info_reader, (uint8_t*)&key_origin->fingerprint,
                   4)) {
     return false;
@@ -271,7 +283,9 @@ bool deser_tap_leaf_script(BufferReader* reader, BufferReader* key_reader,
     return false;
   tap_leaf_script->control_block_len = control_block_len;
   uint64_t script_len = deser_compact_size(reader);
-  if (script_len > sizeof(tap_leaf_script->script)) return false;
+  /* A length of 0 used to become a huge copy (script_len - 1 wrapped). */
+  if (script_len == 0 || script_len > sizeof(tap_leaf_script->script))
+    return false;
   if (!read_bytes(reader, tap_leaf_script->script, script_len - 1))
     return false;
   tap_leaf_script->script_len = script_len - 1;
@@ -368,8 +382,16 @@ bool deser_psbt_input(BufferReader* reader, PartiallySignedInput* input) {
                         key_len - 1))
           return false;
         input->bip32_path.pubkey_len = key_len - 1;
-        if (!deser_hd_keypath(reader, &input->bip32_path.key_origin))
-          return false;
+        {
+          /* The key path is the value of this entry. It used to be read
+           * from the rest of the whole PSBT, which with the right length
+           * wrote far past the end of the path array. */
+          BufferReader path_reader = {0};
+          if (!deser_string_to_buffer_reader(reader, &path_reader))
+            return false;
+          if (!deser_hd_keypath(&path_reader, &input->bip32_path.key_origin))
+            return false;
+        }
         input->bip32_path_lookuped = true;
         break;
       case PSBT_IN_FINAL_SCRIPTSIG:
@@ -522,8 +544,16 @@ bool deser_psbt_output(BufferReader* reader, PartiallySignedOutput* output) {
                         key_len - 1))
           return false;
         output->bip32_path.pubkey_len = key_len - 1;
-        if (!deser_hd_keypath(reader, &output->bip32_path.key_origin))
-          return false;
+        {
+          /* The key path is the value of this entry. It used to be read
+           * from the rest of the whole PSBT, which with the right length
+           * wrote far past the end of the path array. */
+          BufferReader path_reader = {0};
+          if (!deser_string_to_buffer_reader(reader, &path_reader))
+            return false;
+          if (!deser_hd_keypath(&path_reader, &output->bip32_path.key_origin))
+            return false;
+        }
         output->bip32_path_lookuped = true;
         break;
       case PSBT_OUT_AMOUNT:

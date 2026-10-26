@@ -32,7 +32,7 @@
 void nervos_get_address_from_public_key(const uint8_t *public_key,
                                         char *address, const char *network);
 void nervos_signing_txack(const NervosTxAck *tx);
-void nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
+bool nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
                          NervosSignedTx *resp);
 void nervos_sign_sighash_init(HDNode *node, const NervosSignTx *msg,
                               NervosSignedTx *resp);

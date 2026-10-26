@@ -404,6 +404,13 @@ uint8_t oledDrawPageableStringAdapter(int x, int y, const char *text,
     oledRefresh();
     key = protectWaitKey(0, 0);
 
+    if (protectAbortedByInitialize || protectAbortedByCancel) {
+#if !EMULATOR
+      enableLongPress(false);
+#endif
+      return KEY_CANCEL;
+    }
+
 #if !EMULATOR
     if (isLongPress(KEY_UP_OR_DOWN) && getLongPressStatus()) {
       if (isLongPress(KEY_UP)) {
@@ -438,6 +445,9 @@ uint8_t oledDrawPageableStringAdapter(int x, int y, const char *text,
     oledRefresh();
     while (1) {
       key = protectWaitKey(0, 0);
+      if (protectAbortedByInitialize || protectAbortedByCancel) {
+        return KEY_CANCEL;
+      }
       if (key == KEY_CONFIRM || key == KEY_CANCEL) {
         break;
       }

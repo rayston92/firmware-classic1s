@@ -35,6 +35,7 @@ static const uint8_t _SIGN_DOMAIN[] =
     "\xff"
     "solana offchain";
 static const uint8_t _SIGNER_COUNT = 1;
+#define _SIGN_DOMAIN_LENGTH (sizeof(_SIGN_DOMAIN) - 1)
 #define _APPLICATION_DOMAIN_LENGTH (32)
 #define _PREAMBLE_LENGTH                                                       \
   (16 + 1 + _APPLICATION_DOMAIN_LENGTH + 1 + 1 + _SIGNER_COUNT * SIZE_PUBKEY + \
@@ -119,13 +120,12 @@ void solana_sign_tx(const SolanaSignTx *msg, const HDNode *node,
         char *title = G_transaction_summary_title;
         char *text = G_transaction_summary_text;
 
+        /* DIY: "From" and "To" are no longer skipped. They are where the
+         * coins of a stake, nonce or vote withdrawal, a stake split or a
+         * token mint go; skipping them hid the destination entirely. */
         if (strcmp(title, "Create token acct") == 0) {
           continue;
         } else if (strcmp(title, "From mint") == 0) {
-          continue;
-        } else if (strcmp(title, "From") == 0) {
-          continue;
-        } else if (strcmp(title, "To") == 0) {
           continue;
         } else if (strcmp(title, "Funded by") == 0) {
           continue;
@@ -294,7 +294,8 @@ bool solana_sanitize_offchain_message(const SolanaSignOffChainMessage *msg) {
       }
       break;
     case SolanaOffChainMessageFormat_V0_LIMITED_UTF8:
-      if (!is_valid_utf8(msg->message.bytes, msg->message.size)) {
+      if (!is_valid_utf8(msg->message.bytes, msg->message.size) ||
+          has_control_bytes(msg->message.bytes, msg->message.size)) {
         fsm_sendFailure(FailureType_Failure_DataError,
                         "Message format 1 must be a valid UTF-8 string");
         return false;
@@ -308,6 +309,11 @@ bool solana_sanitize_offchain_message(const SolanaSignOffChainMessage *msg) {
   return true;
 }
 //=====================Offchain Message Signing=====================
+
+bool solana_is_offchain_message(const uint8_t *message, size_t message_length) {
+  return message != NULL && message_length >= _SIGN_DOMAIN_LENGTH &&
+         memcmp(message, _SIGN_DOMAIN, _SIGN_DOMAIN_LENGTH) == 0;
+}
 
 //=====================Unsafe Message Signing=====================
 bool solana_sign_unsafe_message(const SolanaSignUnsafeMessage *msg,

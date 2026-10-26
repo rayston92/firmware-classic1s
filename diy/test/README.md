@@ -51,3 +51,27 @@ last argument of `serve` to start from the same wallet again.
 To test the ARM64 build under qemu-user, build both shims with
 `aarch64-linux-gnu-gcc` and set `E2E_QEMU=1` and
 `E2E_SHIMS="/path/screen-keys-shim.so /path/rng-shim.so"`.
+
+## Other checks in this folder
+
+| Script | What it checks |
+|---|---|
+| `entropy_check.py` | The recovery phrase is exactly what `rand_hw.c` should produce from known hardware and kernel random data (both replaced and logged by `rng-shim.so`) |
+| `storage_check.py` | The storage file holds the phrase only encrypted, readable with the right PIN on the same board |
+| `psbt_check.py` | PSBT change detection, key-path bounds, Taproot key-path and script-path signatures |
+| `nostr_check.py` | Nostr key, event and Schnorr signatures, NIP-04 encryption both ways |
+| `message_sweep.py` | Sends every message type once with minimal contents and watches for crashes and freezes |
+| `display_check.py` | What the screen shows against what is signed: long Ethereum data, a short first data chunk, a Tron contract call carrying TRX, Solana transfer and stake withdrawal, a message with a hidden zero byte |
+| `addresses_check.py` | Addresses for Litecoin, Dogecoin, Cosmos, XRP, Filecoin, Stellar, Aptos, Sui, Near and Algorand against independent derivation |
+| `autolock_check.py` | Auto-lock from the home screen and the menus, an open prompt staying usable, the delay set from the app (production build, about 7 minutes) |
+
+`run-check.sh` starts a wallet, runs one of these against it and stops it, in
+its own network namespace. `unlock_then.py` enters the PIN on the wallet's
+screen (`pin_entry.py` reads the digit wheel from the screenshots) and then
+runs a check, for production builds started from a saved storage file.
+
+`psbt_check.py`, `nostr_check.py`, `display_check.py` and `addresses_check.py` load a test phrase through the debug
+interface, so they need a test build (`DEBUG_LINK=1
+DIY_TEST_BUILD_WITH_DEBUG_LINK=1`, never for real use). Given the words of a
+production wallet that is already set up and unlocked as a second argument,
+they run against it instead.

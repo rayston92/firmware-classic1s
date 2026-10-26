@@ -3217,6 +3217,9 @@ static void signing_hash_decred(const TxInputType *txinput,
 #endif
 
 static bool signing_sign_ecdsa(TxInputType *txinput, const uint8_t *hash) {
+  /* Without this the signature is not sent when the host asked for
+   * serialize=false (e.g. collecting multisig signatures). */
+  resp.has_serialized = true;
   resp.serialized.has_signature_index = true;
   resp.serialized.signature_index = idx1;
   resp.serialized.has_signature = true;

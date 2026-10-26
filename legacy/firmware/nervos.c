@@ -204,7 +204,8 @@ void nervos_get_address_from_public_key(const uint8_t *public_key,
   address[strlen(network) + 1 + combined_len] = '\0';
 }
 
-void nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
+// Returns false after sending a Failure; the caller must not send a reply.
+bool nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
                          NervosSignedTx *resp) {
   if (!layoutBlindSign(
           "Nervos", false, NULL, resp->address, msg->data_initial_chunk.bytes,
@@ -212,7 +213,7 @@ void nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
     fsm_sendFailure(FailureType_Failure_ActionCancelled,
                     "Signing cancelled by user");
     nervos_signing_abort();
-    return;
+    return false;
   }
 
   uint8_t hash_output[32];
@@ -238,17 +239,21 @@ void nervos_sign_sighash(HDNode *node, const NervosSignTx *msg,
                         NULL) != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError,
                     __("nervos Signing failed"));
+    nervos_signing_abort();
+    return false;
   }
 #else
   int ret = hdnode_sign_digest(node, output, sig, &v1, NULL);
   if (ret != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError, "nervos Signing failed");
-    return;
+    nervos_signing_abort();
+    return false;
   }
 #endif
   memcpy(resp->signature.bytes, sig, 64);
   resp->signature.bytes[64] = v1;
   resp->signature.size = 65;
+  return true;
 }
 
 static void send_request_chunk(void) {
@@ -317,7 +322,8 @@ void nervos_signing_txack(const NervosTxAck *tx) {
 }
 
 void send_signature(void) {
-  NervosSignedTx tx_resp;
+  // DIY: zeroed, or the unset address field sent leftover stack bytes.
+  NervosSignedTx tx_resp = {0};
   blake2b_state S;
   ckb_hasher_init(&S);
   blake2b_Update(&S, global_hash_output, 32);
@@ -337,12 +343,15 @@ void send_signature(void) {
                         NULL) != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError,
                     __("nervos Signing failed"));
+    nervos_signing_abort();
+    return;
   }
 
 #else
   int ret = hdnode_sign_digest(&global_node, output, sig, &v1, NULL);
   if (ret != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError, "nervos Signing failed");
+    nervos_signing_abort();
     return;
   }
 #endif
@@ -351,6 +360,9 @@ void send_signature(void) {
   tx_resp.signature.size = 65;
   msg_write(MessageType_MessageType_NervosSignedTx, &tx_resp);
   layoutHome();
+  // The session is over: a later NervosTxAck must not produce another
+  // signature from the finished state.
+  nervos_signing_abort();
 }
 
 void nervos_signing_abort(void) {

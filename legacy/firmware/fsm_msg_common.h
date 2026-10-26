@@ -585,7 +585,8 @@ void fsm_msgCancel(const Cancel *msg) {
 
 void fsm_msgLockDevice(const LockDevice *msg) {
   (void)msg;
-  config_lockDevice();
+  // Clear all sessions (cached seeds) too, not only lock storage.
+  session_clear(true);
   layoutScreensaver();
   fsm_sendSuccess("Session cleared");
 }
@@ -776,6 +777,12 @@ void fsm_msgApplySettings(const ApplySettings *msg) {
   }
   if (msg->has_auto_lock_delay_ms) {
     config_setSleepDelayMs(msg->auto_lock_delay_ms);
+#if EMULATOR
+    /* The device sleeps (and locks) after this delay. The emulator never
+     * sleeps, so apply it to the auto-lock delay, or the app's auto-lock
+     * setting would do nothing here. */
+    config_setAutoLockDelayMs(msg->auto_lock_delay_ms);
+#endif
     menu_autolock_added_custom();
   }
   if (msg->has_use_ble) {
@@ -881,6 +888,16 @@ static void progress_callback(uint32_t iter, uint32_t total) {
 }
 
 void fsm_msgGetFirmwareHash(const GetFirmwareHash *msg) {
+#if EMULATOR
+  /* There is no firmware image in flash to hash here (the wallet is a Linux
+   * program), and hashing the emulator's flash read past its end and crashed
+   * the wallet. */
+  (void)msg;
+  fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
+                  "Firmware hash is not available on this device");
+  layoutHome();
+  return;
+#endif
   RESP_INIT(FirmwareHash);
   layoutProgressSwipe(_(C__PLEASE_WAIT), 0);
   if (memory_firmware_hash(msg->challenge.bytes, msg->challenge.size,
@@ -947,6 +964,16 @@ void fsm_msgBixinReboot(const BixinReboot *msg) {
 }
 
 void fsm_msgBixinMessageSE(const BixinMessageSE *msg) {
+#if EMULATOR
+  /* Passes raw commands to the secure element. There is none here, and the
+   * emulator's I2C code waits forever for its answer, which froze the wallet
+   * until it was restarted. */
+  (void)msg;
+  fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
+                  "No secure element on this device");
+  layoutHome();
+  return;
+#endif
   RESP_INIT(BixinOutMessageSE);
   if (false == config_getMessageSE(
                    (BixinMessageSE_inputmessage_t *)(&msg->inputmessage),

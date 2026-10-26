@@ -271,7 +271,26 @@ void fsm_msgWebAuthnRemoveResidentCredential(
   return;
 }
 #else
-inline void fsm_msgWebAuthnListResidentCredentials(const WebAuthnListResidentCredentials *msg)  { (void) msg; }
-inline void fsm_msgWebAuthnAddResidentCredential(const WebAuthnAddResidentCredential *msg) { (void) msg; }
-inline void fsm_msgWebAuthnRemoveResidentCredential(const WebAuthnRemoveResidentCredential *msg) { (void) msg; }
+/* No security-key (FIDO) support in the emulator. These used to return
+ * without any reply, so the computer waited forever. */
+static void webauthn_unsupported(void) {
+  fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
+                  "Security keys are not supported on this device");
+  layoutHome();
+}
+void fsm_msgWebAuthnListResidentCredentials(
+    const WebAuthnListResidentCredentials *msg) {
+  (void)msg;
+  webauthn_unsupported();
+}
+void fsm_msgWebAuthnAddResidentCredential(
+    const WebAuthnAddResidentCredential *msg) {
+  (void)msg;
+  webauthn_unsupported();
+}
+void fsm_msgWebAuthnRemoveResidentCredential(
+    const WebAuthnRemoveResidentCredential *msg) {
+  (void)msg;
+  webauthn_unsupported();
+}
 #endif

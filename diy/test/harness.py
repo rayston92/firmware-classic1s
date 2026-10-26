@@ -29,7 +29,7 @@ ON, OFF = (82, 180, 255), (0, 0, 0)
 
 
 class Wallet:
-    def __init__(self, elf, sysfs=None, name="run", state=None):
+    def __init__(self, elf, sysfs=None, name="run", state=None, extra_env=None):
         self.work = tempfile.mkdtemp()
         sysfs = sysfs or fake_sysfs(os.path.join(self.work, "sys"))
         if state:  # start from a saved wallet (its flash storage file)
@@ -52,6 +52,7 @@ class Wallet:
             RNGSHIM_FAKE_RDEV="1",
             RNGSHIM_SYSFS=sysfs,
         )
+        env.update(extra_env or {})  # e.g. RNGSHIM_TARGET / RNGSHIM_GETRANDOM / RNGSHIM_LOG for the entropy test
         self.log = open(os.path.join(self.work, "wallet.log"), "w")
         elf = os.path.abspath(elf)
         if os.environ.get("E2E_QEMU"):
@@ -59,6 +60,10 @@ class Wallet:
         else:
             cmd = [elf]
             env["LD_PRELOAD"] = preload
+            if os.environ.get("E2E_GDB"):  # debugging aid: print a backtrace if the wallet crashes
+                cmd = ["gdb", "-q", "-batch", "-ex", "set startup-with-shell off", "-ex", f"set environment LD_PRELOAD {preload}",
+                       "-ex", "run", "-ex", "bt 25", "--args", elf]
+                env.pop("LD_PRELOAD")
         self.proc = subprocess.Popen(cmd, cwd=self.work, env=env, stdout=self.log, stderr=subprocess.STDOUT)
         self.keys = os.open(fifo, os.O_WRONLY)  # waits until the wallet opens its keys
         self.out = os.path.join(SCRATCH, name)

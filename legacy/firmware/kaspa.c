@@ -32,7 +32,10 @@ static bool is_schnorr = true;
 static char prefix[10] = {0};
 // static char *allowed_prefixs[] = {"kaspa", "kaspatest", "kaspasim",
 // "kaspadev"};
-static char previous_address[72] = {0};
+// An ECDSA address with a 9-letter prefix such as "kaspatest" is 73
+// characters long, so 72-byte buffers are too small.
+#define KASPA_ADDRESS_BUF_SIZE 80
+static char previous_address[KASPA_ADDRESS_BUF_SIZE] = {0};
 
 #define CALCULATE_SIGNING_HASH(pre_image, pre_image_len)           \
   uint8_t schnorr_digest[32] = {0};                                \
@@ -56,7 +59,11 @@ void kaspa_signing_init(const KaspaSignTx *msg) {
   input_index = 1;
   use_tweak_g = (msg->has_use_tweak && !msg->use_tweak) ? false : true;
   is_schnorr = strcmp(msg->scheme, "schnorr") == 0;
+  memzero(prefix, sizeof(prefix));
   memcpy(prefix, msg->prefix, sizeof(msg->prefix));
+  // Every new transaction asks for confirmation again, even if an earlier
+  // session for the same address was left unfinished.
+  memzero(previous_address, sizeof(previous_address));
 }
 
 void kaspa_signing_abort(void) {
@@ -100,17 +107,18 @@ void kaspa_get_address(const uint8_t *pubkey, const uint8_t pubkey_len,
   cash_addr_encode(addr, addr_prefix, payload, sizeof(payload));
 }
 
-void kaspa_sign_sighash(HDNode *node, const uint8_t *raw_message,
+// Returns false after sending a Failure; the caller must not send a reply.
+bool kaspa_sign_sighash(HDNode *node, const uint8_t *raw_message,
                         uint32_t raw_message_len, uint8_t *signature,
                         pb_size_t *signature_len) {
   if (!kaspa_signing) {
     fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
                     "Not in Kaspa signing mode");
     layoutHome();
-    return;
+    return false;
   }
   input_count--;
-  char address[72] = {0};
+  char address[KASPA_ADDRESS_BUF_SIZE] = {0};
   uint8_t *pub_key = node->public_key + (is_schnorr ? 1 : 0);
   uint32_t key_len = is_schnorr ? 32 : 33;
   kaspa_get_address(pub_key, key_len, prefix, address, use_tweak_g);
@@ -121,19 +129,22 @@ void kaspa_sign_sighash(HDNode *node, const uint8_t *raw_message,
       fsm_sendFailure(FailureType_Failure_ActionCancelled,
                       "Signing cancelled by user");
       kaspa_signing_abort();
-      return;
+      return false;
     }
   }
 
   CALCULATE_SIGNING_HASH(raw_message, raw_message_len);
   if (is_schnorr) {
 #if EMULATOR
-    if (use_tweak_g) {
-      tx_sign_bip340(node->private_key, schnorr_digest, signature,
-                     signature_len);
-    } else {
-      tx_sign_bip340_internal(node->private_key, schnorr_digest, signature,
-                              signature_len);
+    bool ok = use_tweak_g ? tx_sign_bip340(node->private_key, schnorr_digest,
+                                           signature, signature_len)
+                          : tx_sign_bip340_internal(node->private_key,
+                                                    schnorr_digest, signature,
+                                                    signature_len);
+    if (!ok) {
+      fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");
+      kaspa_signing_abort();
+      return false;
     }
 #else
     int ret = 0;
@@ -145,7 +156,7 @@ void kaspa_sign_sighash(HDNode *node, const uint8_t *raw_message,
     if (ret != 0) {
       fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");
       kaspa_signing_abort();
-      return;
+      return false;
     }
     *signature_len = 64;
 #endif
@@ -153,17 +164,22 @@ void kaspa_sign_sighash(HDNode *node, const uint8_t *raw_message,
     // ecdsa sign
     CALCULATE_SIGNING_HASH_ECDSA;
 #if EMULATOR
-    tx_sign_ecdsa(&secp256k1, node->private_key, ecdsa_digest, signature,
-                  signature_len);
+    if (!tx_sign_ecdsa(&secp256k1, node->private_key, ecdsa_digest, signature,
+                       signature_len)) {
+      fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");
+      kaspa_signing_abort();
+      return false;
+    }
 #else
     uint8_t sig[64];
     int ret = hdnode_sign_digest(node, ecdsa_digest, sig, NULL, NULL);
     if (ret != 0) {
       fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");
       kaspa_signing_abort();
-      return;
+      return false;
     }
     *signature_len = ecdsa_sig_to_der(sig, signature);
 #endif
   }
+  return true;
 }

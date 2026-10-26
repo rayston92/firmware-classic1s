@@ -8,6 +8,7 @@
 #include "gettext.h"
 #include "layout2.h"
 #include "messages.h"
+#include "memzero.h"
 #include "messages.pb.h"
 #include "protect.h"
 #include "ripemd160.h"
@@ -138,7 +139,7 @@ bool nostr_sign_event(const NostrSignEvent *msg, const HDNode *node,
   unsignedEvent_bytes[unsignedEvent_index++] = ']';
 
   uint8_t hash[32];
-  uint8_t signature[64];
+  uint8_t signature[64] = {0};
   SHA256_CTX ctx;
   sha256_Init(&ctx);
   sha256_Update(&ctx, unsignedEvent_bytes, unsignedEvent_index);
@@ -146,11 +147,7 @@ bool nostr_sign_event(const NostrSignEvent *msg, const HDNode *node,
 
   data2hexaddr(hash, 32, id);
 
-#if EMULATOR
-  int ret = 0;
-#else
   int ret = hdnode_bip340_sign_digest_internal(node, hash, signature);
-#endif
 
   if (ret != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");
@@ -164,31 +161,66 @@ bool nostr_sign_event(const NostrSignEvent *msg, const HDNode *node,
   return true;
 }
 
+/* NIP-04 limits (DIY). The reply holds base64(ciphertext) + "?iv=" + 24
+ * base64 characters of IV in at most 1562 characters, so the ciphertext can
+ * be at most 1136 bytes and the plaintext at most 1135. The original code had
+ * no limits: long messages, a long "iv" or a long peer key written by the
+ * computer overflowed buffers, and bad padding made it write before the reply
+ * buffer. */
+#define NOSTR_IV_B64_LEN 24
+#define NOSTR_MAX_CIPHERTEXT 1136
+#define NOSTR_MAX_PLAINTEXT (NOSTR_MAX_CIPHERTEXT - 1)
+
+/* hex2data() lets some non-hex characters through, so check first. */
+static bool nostr_is_hex(const char *s, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    char c = s[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+          (c >= 'A' && c <= 'F'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Peer key: exactly 64 hex characters (x only); pk gets 0x02 || x. pk has
+ * room for the NUL that hex2data always writes after the data. */
+static bool nostr_parse_peer_pubkey(const char *hex, uint8_t pk[34]) {
+  unsigned int len = 0;
+  if (strnlen(hex, 65) != 64 || !nostr_is_hex(hex, 64)) return false;
+  pk[0] = 0x02;
+  return hex2data(hex, pk + 1, &len) == 0 && len == 32;
+}
+
 bool nostr_encrypt_message(NostrEncryptMessage *msg, const HDNode *node,
                            NostrEncryptedMessage *resp) {
   uint8_t shared_secret[65] = {0};
-  uint8_t pk[33] = {0};
+  uint8_t pk[34] = {0};
   char npub[92] = {0};
-  unsigned int pk_len = 0;
-  pk[0] = 0x02;
+
+  size_t msg_len = strnlen(msg->msg, sizeof(msg->msg));
+  if (!nostr_parse_peer_pubkey(msg->pubkey, pk)) {
+    fsm_sendFailure(FailureType_Failure_DataError, "Invalid public key");
+    layoutHome();
+    return false;
+  }
+  if (msg_len > NOSTR_MAX_PLAINTEXT) {
+    fsm_sendFailure(FailureType_Failure_DataError, "Message too long");
+    layoutHome();
+    return false;
+  }
 
   if (msg->has_show_display && msg->show_display) {
     nostr_get_pubkey(npub, node->public_key + 1);
     if (!layoutNostrEncryptMessage("Nostr", true, npub,
-                                   (const uint8_t *)msg->msg, strlen(msg->msg),
-                                   true)) {
+                                   (const uint8_t *)msg->msg, msg_len, true)) {
       fsm_sendFailure(FailureType_Failure_ActionCancelled, NULL);
       layoutHome();
       return false;
     }
   }
 
-  hex2data(msg->pubkey, pk + 1, &pk_len);
-#if EMULATOR
-  bool res = 0;
-#else
   bool res = hdnode_bip340_get_shared_key_ln(node, pk, shared_secret) == 0;
-#endif
   if (!res) {
     fsm_sendFailure(FailureType_Failure_ProcessError,
                     "Failed to derive shared secret.");
@@ -196,36 +228,42 @@ bool nostr_encrypt_message(NostrEncryptMessage *msg, const HDNode *node,
   }
 
   uint8_t iv[16] = {0};
-  char iv_b64[64] = {0};
+  char iv_b64[NOSTR_IV_B64_LEN + 1] = {0};
 
   random_buffer(iv, 16);
   base64_encode((char *)iv, 16, iv_b64, sizeof(iv_b64));
 
-  int msg_len = strlen(msg->msg);
-  int pad_len = 16 - (msg_len % 16);
-  for (int i = 0; i < pad_len; i++) {
-    msg->msg[msg_len++] = pad_len;
-  }
+  /* PKCS#7 padding into a separate buffer. */
+  uint8_t plain[NOSTR_MAX_CIPHERTEXT] = {0};
+  size_t pad_len = 16 - (msg_len % 16);
+  size_t ct_len = msg_len + pad_len;
+  memcpy(plain, msg->msg, msg_len);
+  memset(plain + msg_len, (int)pad_len, pad_len);
 
   aes_encrypt_ctx ctx = {0};
-  uint8_t encrypted[1563] = {0};
-  int ret = aes_encrypt_key256(shared_secret + 1, &ctx);
-  if (ret != EXIT_SUCCESS) {
-    fsm_sendFailure(FailureType_Failure_DataError, "aes_encrypt_key256 failed");
+  uint8_t encrypted[NOSTR_MAX_CIPHERTEXT] = {0};
+  bool ok = aes_encrypt_key256(shared_secret + 1, &ctx) == EXIT_SUCCESS &&
+            aes_cbc_encrypt(plain, encrypted, (int)ct_len, iv, &ctx) ==
+                EXIT_SUCCESS;
+  memzero(plain, sizeof(plain));
+  memzero(shared_secret, sizeof(shared_secret));
+  memzero(&ctx, sizeof(ctx));
+  if (!ok) {
+    fsm_sendFailure(FailureType_Failure_DataError, "aes_cbc_encrypt failed");
     layoutHome();
     return false;
   }
-  if (aes_cbc_encrypt((uint8_t *)msg->msg, encrypted, msg_len, iv, &ctx) !=
-      EXIT_SUCCESS) {
-    fsm_sendFailure(FailureType_Failure_DataError, "aes_cbc_encrypt failed");
+
+  base64_encode((char *)encrypted, ct_len, (char *)resp->msg,
+                sizeof(resp->msg));
+  size_t out_len = strnlen(resp->msg, sizeof(resp->msg));
+  if (out_len + 4 + NOSTR_IV_B64_LEN + 1 > sizeof(resp->msg)) {
+    fsm_sendFailure(FailureType_Failure_DataError, "Message too long");
+    layoutHome();
     return false;
   }
-
-  base64_encode((char *)encrypted, msg_len, (char *)resp->msg,
-                sizeof(resp->msg));
-  ret = strlen(resp->msg);
-  memcpy(resp->msg + ret, "?iv=", 4);
-  memcpy(resp->msg + ret + 4, iv_b64, strlen(iv_b64));
+  memcpy(resp->msg + out_len, "?iv=", 4);
+  memcpy(resp->msg + out_len + 4, iv_b64, NOSTR_IV_B64_LEN + 1);
 
   return true;
 }
@@ -233,37 +271,26 @@ bool nostr_encrypt_message(NostrEncryptMessage *msg, const HDNode *node,
 bool nostr_decrypt_message(NostrDecryptMessage *msg, const HDNode *node,
                            NostrDecryptedMessage *resp) {
   uint8_t shared_secret[65] = {0};
-  uint8_t pk[33] = {0};
+  uint8_t pk[34] = {0};
   char npub[92] = {0};
-  uint8_t ct[1563] = {0};
-  uint8_t iv[16] = {0};
-  unsigned int pk_len = 0;
-  int ct_len, ret, pad_val;
+  uint8_t ct[sizeof(msg->msg)] = {0};
+  uint8_t iv[18] = {0};
+
+  if (!nostr_parse_peer_pubkey(msg->pubkey, pk)) {
+    fsm_sendFailure(FailureType_Failure_DataError, "Invalid public key");
+    layoutHome();
+    return false;
+  }
 
   if (msg->has_show_display && msg->show_display) {
     nostr_get_pubkey(npub, node->public_key + 1);
-    if (!layoutNostrEncryptMessage("Nostr", false, npub,
-                                   (const uint8_t *)msg->msg, strlen(msg->msg),
-                                   true)) {
+    if (!layoutNostrEncryptMessage(
+            "Nostr", false, npub, (const uint8_t *)msg->msg,
+            strnlen(msg->msg, sizeof(msg->msg)), true)) {
       fsm_sendFailure(FailureType_Failure_ActionCancelled, NULL);
       layoutHome();
       return false;
     }
-  }
-
-  pk[0] = 0x02;
-  hex2data(msg->pubkey, pk + 1, &pk_len);
-
-#if EMULATOR
-  int res = 0;
-#else
-  bool res = hdnode_bip340_get_shared_key_ln(node, pk, shared_secret) == 0;
-#endif
-
-  if (!res) {
-    fsm_sendFailure(FailureType_Failure_ProcessError,
-                    "Failed to derive shared secret.");
-    return false;
   }
 
   char *iv_b64 = strstr(msg->msg, "?iv=");
@@ -275,48 +302,81 @@ bool nostr_decrypt_message(NostrDecryptMessage *msg, const HDNode *node,
   iv_b64[0] = '\0';
   iv_b64 += 4;
 
-  char *end = b64tobin(iv, iv_b64);
-  if (!end) {
+  /* The IV is 16 bytes: exactly 24 base64 characters. */
+  char *end = NULL;
+  if (strnlen(iv_b64, NOSTR_IV_B64_LEN + 1) == NOSTR_IV_B64_LEN) {
+    end = b64tobin(iv, iv_b64);
+  }
+  if (!end || end - (char *)iv != 16) {
     fsm_sendFailure(FailureType_Failure_DataError, "iv error");
     layoutHome();
     return false;
   }
-  end = b64tobin(ct, msg->msg);
-  if (!end) {
+
+  /* Base64 decodes to at most 3/4 of its length, which fits in ct. */
+  size_t ct_b64_len = strnlen(msg->msg, sizeof(msg->msg));
+  end = NULL;
+  if (ct_b64_len > 0 && ct_b64_len % 4 == 0 &&
+      ct_b64_len / 4 * 3 <= sizeof(ct)) {
+    end = b64tobin(ct, msg->msg);
+  }
+  size_t ct_len = end ? (size_t)(end - (char *)ct) : 0;
+  if (ct_len == 0 || ct_len % 16 != 0 || ct_len >= sizeof(resp->msg)) {
     fsm_sendFailure(FailureType_Failure_DataError, "ct error");
     layoutHome();
     return false;
   }
-  ct_len = end - (char *)ct;
+
+  bool res = hdnode_bip340_get_shared_key_ln(node, pk, shared_secret) == 0;
+  if (!res) {
+    fsm_sendFailure(FailureType_Failure_ProcessError,
+                    "Failed to derive shared secret.");
+    return false;
+  }
 
   aes_decrypt_ctx ctx = {0};
-  ret = aes_decrypt_key256(shared_secret + 1, &ctx);
-  if (ret != EXIT_SUCCESS) {
-    fsm_sendFailure(FailureType_Failure_DataError, "aes_encrypt_key256 failed");
+  bool ok = aes_decrypt_key256(shared_secret + 1, &ctx) == EXIT_SUCCESS &&
+            aes_cbc_decrypt(ct, (unsigned char *)resp->msg, (int)ct_len, iv,
+                            &ctx) == EXIT_SUCCESS;
+  memzero(shared_secret, sizeof(shared_secret));
+  memzero(&ctx, sizeof(ctx));
+  if (!ok) {
+    fsm_sendFailure(FailureType_Failure_DataError, "aes_cbc_decrypt failed");
     layoutHome();
     return false;
   }
 
-  if (aes_cbc_decrypt(ct, (unsigned char *)resp->msg, ct_len, iv, &ctx) !=
-      EXIT_SUCCESS) {
-    fsm_sendFailure(FailureType_Failure_DataError, "aes_cbc_decrypt failed");
+  /* PKCS#7: 1..16 bytes, all equal to the count. */
+  uint8_t pad_val = (uint8_t)resp->msg[ct_len - 1];
+  bool pad_ok = pad_val >= 1 && pad_val <= 16 && pad_val <= ct_len;
+  for (size_t i = 1; pad_ok && i <= pad_val; i++) {
+    if ((uint8_t)resp->msg[ct_len - i] != pad_val) pad_ok = false;
+  }
+  if (!pad_ok) {
+    memzero(resp->msg, sizeof(resp->msg));
+    fsm_sendFailure(FailureType_Failure_DataError, "Invalid padding");
+    layoutHome();
     return false;
   }
-  ct_len = strlen(resp->msg);
-  pad_val = resp->msg[ct_len - 1];
-  if (pad_val <= 0xf) {
-    resp->msg[ct_len - pad_val] = '\0';
-  }
+  resp->msg[ct_len - pad_val] = '\0';
   return true;
 }
 
 bool nostr_sign_schnorr(const NostrSignSchnorr *msg, const HDNode *node,
                         NostrSignedSchnorr *resp) {
-  uint8_t hash[32] = {0};
+  uint8_t hash[33] = {0};  // hex2data writes a NUL after the 32 bytes
   char npub[92] = {0};
   unsigned int len = 0;
 
-  hex2data(msg->hash, hash, &len);
+  /* The hash must be exactly 32 bytes (64 hex characters). A longer string
+   * used to be written past the end of the buffer. */
+  if (strnlen(msg->hash, sizeof(msg->hash)) != 64 ||
+      !nostr_is_hex(msg->hash, 64) || hex2data(msg->hash, hash, &len) != 0 ||
+      len != 32) {
+    fsm_sendFailure(FailureType_Failure_DataError, "Invalid hash");
+    layoutHome();
+    return false;
+  }
   nostr_get_pubkey(npub, node->public_key + 1);
 
   if (!layoutSignSchnorrHash("Nostr", npub, msg->hash)) {
@@ -325,12 +385,8 @@ bool nostr_sign_schnorr(const NostrSignSchnorr *msg, const HDNode *node,
     return false;
   }
 
-#if EMULATOR
-  int ret = 0;
-#else
   int ret =
       hdnode_bip340_sign_digest_internal(node, hash, resp->signature.bytes);
-#endif
 
   if (ret != 0) {
     fsm_sendFailure(FailureType_Failure_ProcessError, "Signing failed");

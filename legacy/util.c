@@ -253,9 +253,20 @@ bool is_valid_utf8(const uint8_t *data, size_t length) {
   return true;
 }
 
+/* DIY: true if data has a zero or another control byte. The screen stops at
+ * a zero byte, so text holding one would be signed with its rest unseen. */
+bool has_control_bytes(const uint8_t *data, size_t length) {
+  for (size_t i = 0; i < length; i++) {
+    if (data[i] < 0x20 || data[i] == 0x7f) return true;
+  }
+  return false;
+}
+
 bool is_printable(const uint8_t *data, uint32_t length) {
   bool is_ascii = is_valid_ascii(data, length);
   if (!is_ascii) {
+    if (has_control_bytes(data, length)) return false;  // shown as hex
+
     int check_length = length > 4 ? 4 : length;
     for (int i = 0; i < check_length; i++) {
       if (data[i] >= 0x80) {
@@ -278,7 +289,9 @@ void init_buffer_writer(BufferWriter *writer, uint8_t *buffer, size_t length) {
   writer->position = 0;
 }
 int read_bytes(BufferReader *reader, uint8_t *dest, size_t count) {
-  if (reader->position + count > reader->length) {
+  /* Written so that a huge count cannot wrap around and pass the check. */
+  if (reader->position > reader->length ||
+      count > reader->length - reader->position) {
     return 0;
   }
   memcpy(dest, reader->buffer + reader->position, count);

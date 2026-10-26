@@ -1214,7 +1214,9 @@ bool layoutConfirmTx(const CoinInfo *coin, AmountUnit amount_unit,
       oledDrawBitmap(3 * OLED_WIDTH / 4 - 8, OLED_HEIGHT - 7,
                      &bmp_bottom_middle_arrow_down);
     } else if (current_index == total_index - 1) {  // fee
-      strcat(desc, _(I__FEE_COLON));
+      // DIY: was strcat, which appended again each time the page was shown
+      // and overran desc after a few up/down presses.
+      strlcpy(desc, _(I__FEE_COLON), sizeof(desc));
       oledDrawStringAdapter(0, 13, desc, FONT_STANDARD);
       oledDrawStringAdapter(0, 13 + 10, str_fee, FONT_STANDARD);
       oledDrawBitmap(OLED_WIDTH / 4, OLED_HEIGHT - 7,
@@ -1226,7 +1228,10 @@ bool layoutConfirmTx(const CoinInfo *coin, AmountUnit amount_unit,
     while (1) {
       key = protectWaitKey(0, 0);
       if (key == KEY_CONFIRM) {
-        return true;
+        /* Go on to the final "Sign transaction" page below. This used to
+         * return true here, so one press of the "next" arrow on the amount
+         * page signed, and the final page was never shown. */
+        break;
       } else if (key == KEY_CANCEL || key == KEY_NULL) {
         return false;
       } else if (key == KEY_DOWN) {
@@ -1241,6 +1246,9 @@ bool layoutConfirmTx(const CoinInfo *coin, AmountUnit amount_unit,
         }
       }
       delay_ms(10);
+    }
+    if (key == KEY_CONFIRM) {
+      break;
     }
   }
   oledClear();
@@ -2204,6 +2212,10 @@ void layoutCosiSign(const uint32_t *address_n, size_t address_n_count,
 void layoutHomeInfo(void) {
   uint8_t key = KEY_NULL;
   key = keyScan();
+#if EMULATOR
+  // Key presses on the home screen and in the menus count as use.
+  if (key != KEY_NULL) system_millis_lock_start = timer_ms();
+#endif
   msg_command_inprogress = false;
   if (layoutLast == onboarding) {
 #if !EMULATOR
@@ -2390,18 +2402,10 @@ _layout:
 }
 
 void layoutTxConfirmPage(const char *data) {
-  char line[64] = {0};
-  int rows = countlines((char *)data);
-  int p1 = line_index((char *)data, 1);
-  int p2 = line_index((char *)data, 2);
-  memcpy(line, data, p1);
-  oledDrawStringCenterAdapter(OLED_WIDTH / 2, 13 + 8, line, FONT_STANDARD);
-  memcpy(line, data + p1 + 1, p2 - p1);
-  oledDrawStringCenterAdapter(OLED_WIDTH / 2, 13 + 10 + 8, line, FONT_STANDARD);
-  if (rows > 2) {
-    oledDrawStringCenterAdapter(OLED_WIDTH / 2, 13 + 20 + 8, data + p2 + 1,
-                                FONT_STANDARD);
-  }
+  /* The text wraps by itself. The old code copied each wrapped line into a
+   * 64-byte buffer without a length check, dropped the first byte of the
+   * second line and could leave bytes of the first line behind. */
+  oledDrawStringCenterAdapter(OLED_WIDTH / 2, 13 + 8, data, FONT_STANDARD);
 }
 
 bool layoutConfirmSafetyChecks(SafetyCheckLevel safety_ckeck_level,
@@ -2425,7 +2429,7 @@ bool layoutConfirmSafetyChecks(SafetyCheckLevel safety_ckeck_level,
         &bmp_bottom_right_confirm, NULL, NULL, NULL, NULL, NULL, NULL,
         _(C__ARE_YOU_SURE_TO_ENABLE_SAFETY_CHECKS_QUES));
     key = protectWaitKey(0, 1);
-    if (key == KEY_CANCEL) {
+    if (key != KEY_CONFIRM) {
       return false;
     }
   } else if (safety_ckeck_level == SafetyCheckLevel_PromptTemporarily) {
@@ -2434,8 +2438,11 @@ bool layoutConfirmSafetyChecks(SafetyCheckLevel safety_ckeck_level,
         _(T__SAFETY_CHECKS), NULL, &bmp_bottom_left_close,
         &bmp_bottom_right_arrow, NULL, NULL, NULL, NULL, NULL, NULL,
         _(C__IT_WILL_TEMPORARILY_ALLOW_YOU_TO_PERFORM_SOME_ACTIONS_WITH_POTENTIALLY_RISKY));
+    /* Only an explicit confirm counts. A Cancel or Initialize from the
+     * computer, or the auto-lock, makes protectWaitKey return KEY_NULL, which
+     * used to be taken as a yes and turned safety checks off. */
     key = protectWaitKey(0, 1);
-    if (key == KEY_CANCEL) {
+    if (key != KEY_CONFIRM) {
       return false;
     }
     layoutDialogCenterAdapterV2(
@@ -2443,7 +2450,7 @@ bool layoutConfirmSafetyChecks(SafetyCheckLevel safety_ckeck_level,
         &bmp_bottom_right_confirm, NULL, NULL, NULL, NULL, NULL, NULL,
         _(C__ARE_YOU_SURE_TO_TEMPORARILY_DISABLE_SAFETY_CHECKS_QUES));
     key = protectWaitKey(0, 1);
-    if (key == KEY_CANCEL) {
+    if (key != KEY_CONFIRM) {
       return false;
     }
   }
@@ -2718,7 +2725,10 @@ void layoutDialogAdapterEx(const char *title, const BITMAP *bmp_no,
     if (lines <= 3) {
       y = 17;
     }
-    oledDrawStringCenterAdapter(0, y, desc, FONT_STANDARD);
+    /* Centre on the middle of the screen. With x = 0 the text width limit
+     * came out as 0 and nothing was drawn, so for example the non-standard
+     * path warning showed its title and buttons but not the path. */
+    oledDrawStringCenterAdapter(OLED_WIDTH / 2, y, desc, FONT_STANDARD);
   } else {
     if (line1) lines++;
     if (line2) lines++;
@@ -3986,8 +3996,20 @@ bool layoutEnterSleep(int mode) {
   }
 
 #else
-  if ((timer_ms() - system_millis_lock_start) >= config_getAutoLockDelayMs()) {
-    config_lockDevice();
+  /* Emulator (DIY): lock after the auto-lock delay, but only from the home
+   * screen and the menus, as Trezor does (it locks only from its home
+   * screen); session_clear() also wipes the cached seed. 0 means never
+   * (before, 0 made the wallet lock constantly). Prompts, and signing that
+   * is still going on between messages from the computer, are left alone.
+   * Before, the wallet locked and blanked the screen underneath an open
+   * prompt, and the next key press still answered that hidden prompt.
+   * Ending prompts on a timer is not safe either, because some prompt loops
+   * treat "no key" as "keep waiting". */
+  uint32_t delay = config_getAutoLockDelayMs();
+  if (mode == 0 && delay > 0 &&
+      (layoutLast == layoutHome || layoutLast == menu_run) &&
+      (timer_ms() - system_millis_lock_start) >= delay) {
+    session_clear(true);
     layoutScreensaver();
   }
 #endif
@@ -4104,19 +4126,25 @@ refresh_menu:
     layoutButtonYesAdapter(NULL, &bmp_bottom_right_arrow);
   }
   oledRefresh();
-  HANDLE_KEY(bubble_key)
+  HANDLE_KEY(bubble_key);
 }
 
 bool layoutTransactionSignEVM(const char *chain_name, uint64_t chain_id,
                               bool token_transfer, const char *amount,
                               const char *to_str, const char *signer,
                               const char *recipient, const char *token_id,
-                              const uint8_t *data, uint16_t len,
+                              const uint8_t *data, uint32_t data_total,
                               const char *key1, const char *value1,
                               const char *key2, const char *value2,
                               const char *key3, const char *value3,
                               const char *key4, const char *value4) {
   (void)signer;
+  /* DIY: data_total is the full data length (it was a 16-bit length, so
+   * 65536 bytes showed as none). The title shows the full length; the data
+   * page shows the first 1024 bytes, which is what the device holds while
+   * confirming, and says so when there is more. */
+  uint16_t len = data_total > 1024 ? 1024 : (uint16_t)data_total;
+  bool data_truncated = data_total > len;
   bool result = false, has_chain_id = false, is_nft_transfer = false;
   int index = 0, tokenid_len = 0, token_id_rowcount = 0;
   int y = 0;
@@ -4124,7 +4152,7 @@ bool layoutTransactionSignEVM(const char *chain_name, uint64_t chain_id,
   uint8_t max_index = 2, nft_total_index = 3, nft_index = 0,
           detail_total_index = 0, detail_index = 0;
   char title[64] = {0};
-  char title_data[32] = {0}, bytes_buf[16] = {0};
+  char title_data[64] = {0}, bytes_buf[24] = {0};  // DIY: room for 32-bit sizes
   char chain_id_str[21] = {0};
   uint32_t rowlen = 21;
   const char **str;
@@ -4153,7 +4181,7 @@ bool layoutTransactionSignEVM(const char *chain_name, uint64_t chain_id,
     bracket_replace(title, chain_name);
   }
   strcat(title_data, _(T__VIEW_DATA_BRACKET_STR));
-  uint2str(len, bytes_buf);
+  uint2str(data_total, bytes_buf);
   strcat(bytes_buf, " bytes");
   bracket_replace(title_data, bytes_buf);
 
@@ -4176,8 +4204,10 @@ refresh_menu:
   bubble_key = KEY_NULL;
   y = 13;
   if (has_chain_id && (0 == index)) {
-    char warning[64] = {0};
-    snprintf(warning, 64, "%s", _(C__UNKNOWN_EVM_CHAIN_THE_CHAIN_ID_IS_STR));
+    // DIY: 64 was too small for some languages plus a long chain ID.
+    char warning[128] = {0};
+    snprintf(warning, sizeof(warning), "%s",
+             _(C__UNKNOWN_EVM_CHAIN_THE_CHAIN_ID_IS_STR));
     bracket_replace(warning, chain_id_str);
     layoutDialogCenterAdapterV2(NULL, &bmp_icon_warning, &bmp_bottom_left_close,
                                 &bmp_bottom_right_arrow, NULL, NULL, NULL, NULL,
@@ -4245,7 +4275,7 @@ refresh_menu:
                        &bmp_bottom_middle_arrow_up);
       }
       oledRefresh();
-      bubble_key = protectWaitKey(0, 0);
+      WAIT_KEY_OR_ABORT(0, 0, bubble_key);
       if (bubble_key == KEY_CANCEL) {
         index = 0;  // exit
         break;
@@ -4315,7 +4345,7 @@ refresh_menu:
                        &bmp_bottom_middle_arrow_up);
       }
       oledRefresh();
-      bubble_key = protectWaitKey(0, 0);
+      WAIT_KEY_OR_ABORT(0, 0, bubble_key);
       if (bubble_key == KEY_CANCEL) {
         index = 0;  // exit
         break;
@@ -4339,7 +4369,7 @@ refresh_menu:
   } else if (show_raw_data) {  // data
     layoutHeader(title_data);
     bool data_is_printable = is_printable(data, len);
-    size_t message_len = (data_is_printable ? len : len * 2) + 1;
+    size_t message_len = (data_is_printable ? len : len * 2) + 1 + 4;
     char message[message_len];
     if (data_is_printable) {
       memcpy(message, data, len);
@@ -4347,13 +4377,14 @@ refresh_menu:
     } else {
       data2hex(data, len, message);
     }
+    if (data_truncated) strcat(message, " ...");  // more data than shown
     oledDrawStringAdapter(0, y, _(I__DATA_COLON), FONT_STANDARD);
     bubble_key = oledDrawPageableStringAdapter(
         0, y + 10, message, FONT_STANDARD, &bmp_bottom_left_arrow,
         &bmp_bottom_right_arrow);
   }
   oledRefresh();
-  HANDLE_KEY(bubble_key)
+  HANDLE_KEY(bubble_key);
 }
 
 bool layoutBlindSign(const char *chain_name, bool is_contract,
@@ -4668,7 +4699,8 @@ refresh_menu:
                                 NULL, NULL,
                                 _(SECURITY__SOLANA_RAW_SIGNING_TX_WARNING));
     while (1) {
-      uint8_t key = protectWaitKey(0, 0);
+      uint8_t key = KEY_NULL;
+      WAIT_KEY_OR_ABORT(0, 0, key);
       if (key == KEY_CANCEL) {
         return false;
       } else if (key == KEY_CONFIRM) {
@@ -4691,7 +4723,8 @@ refresh_menu:
       layoutButtonYesAdapter(NULL, &bmp_bottom_right_arrow);
       oledRefresh();
       while (1) {
-        uint8_t key = protectWaitKey(0, 0);
+        uint8_t key = KEY_NULL;
+        WAIT_KEY_OR_ABORT(0, 0, key);
         if (key == KEY_CANCEL || key == KEY_CONFIRM) {
           bubble_key = key;
           break;
@@ -4700,9 +4733,8 @@ refresh_menu:
       }
     }
   } else if (index == max_index - 1) {
-    char message_colon[16] = {0};
-    strcat(message_colon, _(MESSAGE));
-    strcat(message_colon, ":");
+    char message_colon[64] = {0};
+    snprintf(message_colon, sizeof(message_colon), "%s:", _(MESSAGE));
     oledDrawStringAdapter(0, y, message_colon, FONT_STANDARD);
     size_t message_len = (is_printable ? len : len * 2) + 1;
     char message[message_len];

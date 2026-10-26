@@ -14,7 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def serve(elf, sysfs, out, state=None):
     os.environ["E2E_OUT"] = os.path.dirname(out)
     from harness import Wallet
-    w = Wallet(elf, None if sysfs == "-" else sysfs, os.path.basename(out), state)
+    # RNGSHIM_* variables in the controller's environment are passed to the wallet.
+    extra = {k: v for k, v in os.environ.items() if k.startswith("RNGSHIM_")}
+    w = Wallet(elf, None if sysfs == "-" else sysfs, os.path.basename(out), state or None, extra)
     sock_path = os.path.join(out, "ctl.sock")
     if os.path.exists(sock_path):
         os.unlink(sock_path)

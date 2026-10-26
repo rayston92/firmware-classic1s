@@ -13,6 +13,11 @@ static const uint8_t REACH_BOC_MAGIC_PREFIX[4] = {0xb5, 0xee, 0x9c, 0x72};
 
 bool ton_hash_cell(BitString_t* bits, CellRef_t* refs, uint8_t refs_count,
                    CellRef_t* out) {
+  // A TON cell holds at most 1023 data bits. Longer input (for example a
+  // long memo) would not fit in BitString_t and is refused.
+  if (bits->data_cursor > 1023) {
+    return false;
+  }
   SHA256_CTX ctx;
   sha256_Init(&ctx);
 
@@ -68,7 +73,9 @@ bool ton_create_transfer_body(const char* memo, CellRef_t* payload) {
   bitstring_write_uint(&bits, 0, 32);  // text comment tag
   bitstring_write_buffer(&bits, (uint8_t*)memo, strlen(memo));
 
-  ton_hash_cell(&bits, NULL, 0, payload);
+  if (!ton_hash_cell(&bits, NULL, 0, payload)) {
+    return false;
+  }
 
   char payload_ref_hash_hex[HASH_LEN * 2 + 1];
   data2hexaddr(payload->hash, HASH_LEN, payload_ref_hash_hex);
@@ -100,15 +107,15 @@ bool ton_create_jetton_transfer_body(uint8_t dest_workchain, uint8_t* dest_hash,
     bitstring_write_buffer(&bits, (uint8_t*)forward_payload,
                            strlen(forward_payload));
   }
-  ton_hash_cell(&bits, NULL, 0, payload);
-  return true;
+  return ton_hash_cell(&bits, NULL, 0, payload);
 }
 
 bool build_message_ref(bool is_bounceable, uint8_t dest_workchain,
                        uint8_t* dest_hash, uint64_t value, CellRef_t* payload,
                        bool is_jetton, const char* payload_str,
-                       BitString_t* payload_bits, CellRef_t* payload_ref,
-                       CellRef_t* out_message_ref) {
+                       const BitString_t* payload_bits,
+                       const CellRef_t* payload_refs,
+                       uint8_t payload_refs_count, CellRef_t* out_message_ref) {
   BitString_t bits;
   bitstring_init(&bits);
 
@@ -136,9 +143,10 @@ bool build_message_ref(bool is_bounceable, uint8_t dest_workchain,
     return ton_hash_cell(&bits, NULL, 0, out_message_ref);
 
   } else if (payload != NULL) {
-    // check if raw data inline
-    // if (false) {
-    if (bits.data_cursor + payload_bits->data_cursor <= 1023 && !is_jetton) {
+    // Put the body inline when it fits in this cell (the two flag bits
+    // included); a cell holds at most 1023 bits.
+    if (payload_bits != NULL && !is_jetton &&
+        bits.data_cursor + 2 + payload_bits->data_cursor <= 1023) {
       bitstring_write_bit(&bits, 0);  // no state-init
       bitstring_write_bit(&bits, 0);  // body in line
 
@@ -149,14 +157,16 @@ bool build_message_ref(bool is_bounceable, uint8_t dest_workchain,
         bitstring_write_bit(&bits, src_value);
       }
 
-      // append payload ref in message ref
-      if (payload->max_depth > 0) {
-        struct CellRef_t refs[1] = {*payload_ref};
-        return ton_hash_cell(&bits, refs, 1, out_message_ref);
-
-      } else {
-        return ton_hash_cell(&bits, NULL, 0, out_message_ref);
+      // the inlined body keeps all of its references
+      CellRef_t refs[4];
+      if (payload_refs_count > 4) {
+        return false;
       }
+      for (int i = 0; i < payload_refs_count; i++) {
+        refs[i] = payload_refs[i];
+      }
+      return ton_hash_cell(&bits, payload_refs_count ? refs : NULL,
+                           payload_refs_count, out_message_ref);
 
     } else {
       bitstring_write_bit(&bits, 0);  // no state-init
@@ -177,14 +187,16 @@ bool ton_create_message_digest(
     uint32_t expire_at, uint32_t seqno, bool is_bounceable,
     uint8_t dest_workchain, uint8_t* dest_hash, uint64_t value, uint8_t mode,
     CellRef_t* payload, bool is_jetton, const char* payload_str,
-    BitString_t* payload_bits, CellRef_t* payload_ref, const char** ext_dest,
+    const BitString_t* payload_bits, const CellRef_t* payload_refs,
+    uint8_t payload_refs_count, const char** ext_dest,
     const uint64_t* ext_ton_amount, const char** ext_payload,
     uint8_t ext_dest_count, uint8_t* digest) {
   // Build Internal Message
   struct CellRef_t internalMessageRef;
   if (!build_message_ref(is_bounceable, dest_workchain, dest_hash, value,
                          payload, is_jetton, payload_str, payload_bits,
-                         payload_ref, &internalMessageRef)) {
+                         payload_refs, payload_refs_count,
+                         &internalMessageRef)) {
     return false;
   }
 
@@ -200,30 +212,41 @@ bool ton_create_message_digest(
     }
 
     CellRef_t ext_payload_ref;
-    if (ext_payload && ext_payload[i] && strlen(ext_payload[i]) > 0) {
-      if (strlen(ext_payload[i]) >= 8 &&
-          memcmp(ext_payload[i], "b5ee9c72", 8) == 0) {
-        unsigned int data_len = strlen(ext_payload[i]) / 2;
-        uint8_t raw_data[data_len];
-        hex2data(ext_payload[i], raw_data, &data_len);
-        if (!ton_parse_boc(raw_data, data_len, &ext_payload_ref, NULL, NULL)) {
+    memset(&ext_payload_ref, 0, sizeof(CellRef_t));
+    BitString_t ext_payload_bits;
+    CellRef_t ext_payload_refs[4];
+    uint8_t ext_payload_refs_count = 0;
+    const BitString_t* ext_bits = NULL;
+
+    const char* ext_payload_text =
+        ext_payload && ext_payload[i] ? ext_payload[i] : NULL;
+    size_t payload_len = ext_payload_text ? strlen(ext_payload_text) : 0;
+    if (payload_len > 0) {
+      if (payload_len >= 8 && memcmp(ext_payload_text, "b5ee9c72", 8) == 0) {
+        unsigned int data_len = payload_len / 2;
+        // hex2data() writes a terminating zero after the decoded bytes
+        uint8_t raw_data[data_len + 1];
+        if (hex2data(ext_payload_text, raw_data, &data_len) != 0) {
           return false;
         }
+        if (!ton_parse_boc(raw_data, data_len, &ext_payload_ref,
+                           &ext_payload_bits, ext_payload_refs,
+                           &ext_payload_refs_count)) {
+          return false;
+        }
+        ext_bits = &ext_payload_bits;
       } else {
-        if (!ton_create_transfer_body(ext_payload[i], &ext_payload_ref)) {
+        if (!ton_create_transfer_body(ext_payload_text, &ext_payload_ref)) {
           return false;
         }
       }
-      char payload_ref_hash_hex[HASH_LEN * 2 + 1];
-      data2hexaddr(ext_payload_ref.hash, HASH_LEN, payload_ref_hash_hex);
-    } else {
-      memset(&ext_payload_ref, 0, sizeof(CellRef_t));
     }
 
     if (!build_message_ref(
             parsed_addr.is_bounceable, (uint8_t)parsed_addr.workchain,
             parsed_addr.hash, ext_ton_amount[i],
-            ext_payload[i] ? &ext_payload_ref : NULL, false, NULL, NULL, NULL,
+            payload_len > 0 ? &ext_payload_ref : NULL, false, NULL, ext_bits,
+            ext_payload_refs, ext_payload_refs_count,
             &extMessageRefs[ext_message_count])) {
       return false;
     }
@@ -266,164 +289,217 @@ bool ton_create_message_digest(
   return true;
 }
 
-void set_top_upped_array(uint8_t* array, size_t array_len,
-                         bool fullfilled_bytes, uint16_t* cursor) {
-  *cursor =
-      array_len * 8;  // Initialize cursor to the length of the array times 8
-
-  if (fullfilled_bytes || array_len == 0) {
-    return;  // If it's a fully filled byte or the array is empty, return
-             // directly
+static bool ton_boc_read_uint(const uint8_t* boc, size_t boc_len, size_t* index,
+                              uint8_t width, uint32_t* out) {
+  if (width == 0 || width > 4 || *index > boc_len ||
+      width > boc_len - *index) {
+    return false;
   }
-
-  // Start from the end, check up to 7 bits
-  for (int i = 0; i < 7; i++) {
-    (*cursor)--;
-    size_t byte_index = *cursor / 8;
-
-    if ((array[byte_index] & (1 << i)) != 0) {
-      // Found a bit set to 1, set it to 0
-      array[byte_index] &= ~(1 << i);
-
-      return;
-    }
+  uint32_t value = 0;
+  for (uint8_t i = 0; i < width; i++) {
+    value = (value << 8) | boc[(*index)++];
   }
-
-  // If no bit set to 1 is found within 7 bits, throw an error
-  fsm_sendFailure(FailureType_Failure_ProcessError, "Invalid top-upped array");
+  *out = value;
+  return true;
 }
 
+static uint32_t ton_boc_crc32c(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xffffffff;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      crc = (crc & 1) ? (crc >> 1) ^ 0x82F63B78 : crc >> 1;
+    }
+  }
+  return crc ^ 0xffffffff;
+}
+
+// Number of data bits in a cell whose last byte carries the top-up marker.
+static bool ton_boc_get_bit_count(const uint8_t* array, size_t array_len,
+                                  bool has_full_bytes, uint16_t* cursor) {
+  *cursor = array_len * 8;
+  if (has_full_bytes || array_len == 0) {
+    return true;
+  }
+  for (int i = 0; i < 7; i++) {
+    (*cursor)--;
+    if ((array[*cursor / 8] & (1 << i)) != 0) {
+      return true;
+    }
+  }
+  return false;  // no marker bit: malformed cell
+}
+
+/*
+ * Parses a bag of cells with a single root (cell 0) and at most
+ * TON_BOC_MAX_CELLS ordinary cells. Every length and index is checked against
+ * the input, references must point forward, and every cell must be reachable
+ * from the root, so the hash computed here is the hash of exactly the BOC
+ * that was shown. Returns the root hash, the root data bits and the root
+ * references. Does not send any message; the caller reports the failure.
+ */
+#define TON_BOC_MAX_CELLS 4
 bool ton_parse_boc(const uint8_t* input_boc, size_t input_boc_len,
                    CellRef_t* payload, BitString_t* payload_bits,
-                   CellRef_t* payload_ref) {
-  if (input_boc_len < 5 || input_boc_len > 1024) {
+                   CellRef_t* payload_refs, uint8_t* payload_refs_count) {
+  typedef struct {
+    CellRef_t cell_ref;
+    uint16_t data_offset;
+    uint16_t bit_count;
+    uint8_t refs_count;
+    uint8_t ref_indices[4];
+    bool reachable;
+  } TonBocCell;
+  TonBocCell cells[TON_BOC_MAX_CELLS];
+
+  if (input_boc == NULL || payload == NULL || input_boc_len < 6 ||
+      input_boc_len > 1024) {
     return false;
   }
-
-  // Compare BOC with magic prefix
   if (memcmp(input_boc, REACH_BOC_MAGIC_PREFIX, 4) != 0) {
-    return false;  // Does not match
+    return false;
   }
+  memset(cells, 0, sizeof(cells));
 
-  // Record BOC data
-  uint8_t boc[input_boc_len];
-  memcpy(boc, input_boc, input_boc_len);
-
-  size_t index = 0;
-  index += 4;  // Remove the first four bytes of the BOC prefix
-
-  // Parse BOC header
+  const uint8_t* boc = input_boc;
+  size_t boc_len = input_boc_len;
+  size_t index = 4;
   uint8_t flags_byte = boc[index++];
-  bool has_idx = flags_byte & 0x80;
-  // bool hash_crc32 = flags_byte & 0x40;
-  // bool has_cache_bits = flags_byte & 0x20;
-  // uint8_t flags = ((flags_byte & 0x10) << 1) | (flags_byte & 0x08);
+  bool has_idx = (flags_byte & 0x80) != 0;
+  bool has_crc32 = (flags_byte & 0x40) != 0;
+  bool has_cache_bits = (flags_byte & 0x20) != 0;
+  uint8_t flags = (flags_byte >> 3) & 0x03;
   uint8_t size_bytes = flags_byte & 0x07;
-
-  // Read offset_bytes
   uint8_t offset_bytes = boc[index++];
 
-  // Read cells_num
-  uint32_t cells_num = 0;
-  for (int i = 0; i < size_bytes; i++) {
-    cells_num = (cells_num << 8) | boc[index++];
-  }
-
-  if (cells_num > 4) {
-    fsm_sendFailure(FailureType_Failure_ProcessError, "Invalid cells number");
+  if (flags != 0 || size_bytes == 0 || size_bytes > 4 || offset_bytes == 0 ||
+      offset_bytes > 4 || (has_cache_bits && !has_idx)) {
     return false;
   }
 
-  // Read roots_num
-  uint32_t roots_num = 0;
-  for (int i = 0; i < size_bytes; i++) {
-    roots_num = (roots_num << 8) | boc[index++];
-  }
-
-  // Read absent_num
-  uint32_t absent_num = 0;
-  for (int i = 0; i < size_bytes; i++) {
-    absent_num = (absent_num << 8) | boc[index++];
-  }
-
-  // Read tot_cells_size
-  uint32_t tot_cells_size = 0;
-  for (int i = 0; i < offset_bytes; i++) {
-    tot_cells_size = (tot_cells_size << 8) | boc[index++];
-  }
-
-  // Read root list (always zero)
-  uint32_t root_cell_index = 0;
-  if (roots_num > 0) {
-    for (int i = 0; i < size_bytes; i++) {
-      root_cell_index = (root_cell_index << 8) | boc[index++];
-    }
-  }
-
-  if (has_idx) index += cells_num * offset_bytes;
-
-  // First pass: Record data and references for each cell
-  CellData_t cell_data[cells_num];
-  for (uint32_t i = 0; i < cells_num; i++) {
-    bitstring_init(&cell_data[i].bits);
-    uint8_t d1 = boc[index++];
-    uint8_t d2 = boc[index++];
-
-    cell_data[i].refs_count = d1 & 0x07;
-    uint16_t data_bytes = (d2 + 1) / 2;
-    bool is_fullfilled_bytes = !(d2 & 1);
-
-    // Read cell data
-    memcpy(cell_data[i].bits.data, &boc[index], data_bytes);
-    index += data_bytes;
-
-    uint16_t data_cursor;
-    set_top_upped_array(cell_data[i].bits.data, data_bytes, is_fullfilled_bytes,
-                        &data_cursor);
-    cell_data[i].bits.data_cursor = data_cursor;
-
-    if (i == 0) {
-      memcpy(payload_bits->data, cell_data[i].bits.data, data_bytes);
-      payload_bits->data_cursor = data_cursor;
-    }
-
-    // Read reference indices
-    for (int j = 0; j < cell_data[i].refs_count; j++) {
-      uint32_t ref_index = 0;
-      for (int k = 0; k < offset_bytes; k++) {
-        ref_index = (ref_index << 8) | boc[index++];
-      }
-      cell_data[i].ref_indices[j] = ref_index;
-    }
-  }
-
-  // Second pass: Calculate hash from the end
-  for (int i = cells_num - 1; i >= 0; i--) {
-    CellRef_t refs[cell_data[i].refs_count];
-    for (int j = 0; j < cell_data[i].refs_count; j++) {
-      refs[j] = cell_data[cell_data[i].ref_indices[j]].cell_ref;
-    }
-
-    if (!ton_hash_cell(&cell_data[i].bits, refs, cell_data[i].refs_count,
-                       &cell_data[i].cell_ref)) {
-      fsm_sendFailure(FailureType_Failure_ProcessError, "Hash cell failed");
+  if (has_crc32) {
+    if (boc_len < index + 4) {
       return false;
     }
-
-    if (i == 1) {
-      memcpy(payload_ref, &cell_data[i].cell_ref, sizeof(CellRef_t));
+    const uint8_t* c = &boc[boc_len - 4];
+    uint32_t expected_crc = ((uint32_t)c[0]) | ((uint32_t)c[1] << 8) |
+                            ((uint32_t)c[2] << 16) | ((uint32_t)c[3] << 24);
+    if (expected_crc != ton_boc_crc32c(boc, boc_len - 4)) {
+      return false;
     }
+    boc_len -= 4;
   }
 
-  // Assign the value of cell[0] to payload
-  if (cells_num > 0) {
-    CellRef_t temp_payload = cell_data[0].cell_ref;
-    memcpy(payload, &temp_payload, sizeof(CellRef_t));
-  } else {
-    // If no cells found in BOC, return false to indicate failure
-    fsm_sendFailure(FailureType_Failure_ProcessError, "No cells found in BOC");
+  uint32_t cells_num = 0, roots_num = 0, absent_num = 0, tot_cells_size = 0;
+  uint32_t root_cell_index = 0;
+  if (!ton_boc_read_uint(boc, boc_len, &index, size_bytes, &cells_num) ||
+      !ton_boc_read_uint(boc, boc_len, &index, size_bytes, &roots_num) ||
+      !ton_boc_read_uint(boc, boc_len, &index, size_bytes, &absent_num) ||
+      !ton_boc_read_uint(boc, boc_len, &index, offset_bytes,
+                         &tot_cells_size) ||
+      !ton_boc_read_uint(boc, boc_len, &index, size_bytes,
+                         &root_cell_index)) {
+    return false;
+  }
+  if (cells_num == 0 || cells_num > TON_BOC_MAX_CELLS || roots_num != 1 ||
+      absent_num != 0 || root_cell_index != 0) {
     return false;
   }
 
+  if (has_idx) {
+    size_t index_bytes = (size_t)cells_num * offset_bytes;
+    if (index_bytes > boc_len - index) {
+      return false;
+    }
+    index += index_bytes;
+  }
+
+  // The cell data must fill the rest of the input exactly.
+  if (tot_cells_size != boc_len - index) {
+    return false;
+  }
+  size_t cells_end = boc_len;
+
+  for (uint32_t i = 0; i < cells_num; i++) {
+    TonBocCell* cell = &cells[i];
+    if (cells_end - index < 2) {
+      return false;
+    }
+    uint8_t d1 = boc[index++];
+    uint8_t d2 = boc[index++];
+    uint8_t refs_count = d1 & 0x07;
+    // only ordinary level-0 cells without stored hashes are supported
+    if ((d1 & 0xF8) != 0 || refs_count > 4) {
+      return false;
+    }
+    uint16_t data_bytes = (d2 + 1) / 2;
+    bool has_full_bytes = (d2 & 1) == 0;
+    if (data_bytes > sizeof(payload_bits->data) ||
+        (size_t)data_bytes + (size_t)refs_count * size_bytes >
+            cells_end - index) {
+      return false;
+    }
+    cell->refs_count = refs_count;
+    cell->data_offset = (uint16_t)index;
+    index += data_bytes;
+    if (!ton_boc_get_bit_count(&boc[cell->data_offset], data_bytes,
+                               has_full_bytes, &cell->bit_count)) {
+      return false;
+    }
+    for (uint8_t j = 0; j < refs_count; j++) {
+      uint32_t ref_index = 0;
+      if (!ton_boc_read_uint(boc, cells_end, &index, size_bytes, &ref_index) ||
+          ref_index >= cells_num || ref_index <= i) {
+        return false;
+      }
+      cell->ref_indices[j] = (uint8_t)ref_index;
+    }
+  }
+  if (index != cells_end) {
+    return false;
+  }
+
+  // References point forward, so one pass marks everything under the root.
+  cells[0].reachable = true;
+  for (uint32_t i = 0; i < cells_num; i++) {
+    if (!cells[i].reachable) {
+      return false;  // a cell that is not part of the signed tree
+    }
+    for (uint8_t j = 0; j < cells[i].refs_count; j++) {
+      cells[cells[i].ref_indices[j]].reachable = true;
+    }
+  }
+
+  BitString_t bits;
+  for (int i = (int)cells_num - 1; i >= 0; i--) {
+    CellRef_t refs[4];
+    TonBocCell* cell = &cells[i];
+    uint16_t data_bytes = (cell->bit_count + 7U) / 8U;
+
+    bitstring_init(&bits);
+    memcpy(bits.data, &boc[cell->data_offset], data_bytes);
+    bits.data_cursor = cell->bit_count;
+    if (data_bytes > 0 && (cell->bit_count & 7U) != 0) {
+      bits.data[data_bytes - 1U] &=
+          (uint8_t)(0xffU << (8U - (cell->bit_count & 7U)));
+    }
+    if (i == 0 && payload_bits != NULL) {
+      *payload_bits = bits;  // root bits without the top-up marker
+    }
+    for (uint8_t j = 0; j < cell->refs_count; j++) {
+      refs[j] = cells[cell->ref_indices[j]].cell_ref;
+    }
+    if (!ton_hash_cell(&bits, refs, cell->refs_count, &cell->cell_ref)) {
+      return false;
+    }
+  }
+
+  *payload = cells[0].cell_ref;
+  if (payload_refs != NULL && payload_refs_count != NULL) {
+    *payload_refs_count = cells[0].refs_count;
+    for (uint8_t j = 0; j < cells[0].refs_count; j++) {
+      payload_refs[j] = cells[cells[0].ref_indices[j]].cell_ref;
+    }
+  }
   return true;
 }

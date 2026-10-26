@@ -931,6 +931,79 @@ void fsm_msgGetPublicKeyMultiple(const GetPublicKeyMultiple *msg) {
   layoutHome();
 }
 
+/* From OneKey 3.21: read an OP_RETURN output's data, accepting only a single
+ * minimal push that covers the whole script. Before, up to 81 bytes were
+ * copied into an 80-byte buffer and the push length byte was shown as data. */
+static bool parse_op_return_data(const uint8_t *script, size_t script_len,
+                                 const uint8_t **payload, size_t *payload_len) {
+  size_t payload_offset = 2;
+  size_t push_len;
+
+  if (script_len < 2) return false;
+  if (script[1] < 0x4C) {
+    push_len = script[1];
+  } else if (script[1] == 0x4C && script_len >= 3) {
+    payload_offset = 3;
+    push_len = script[2];
+    // Reject non-minimal OP_PUSHDATA1 encodings.
+    if (push_len < 0x4C) return false;
+  } else {
+    return false;
+  }
+
+  if (script_len != payload_offset + push_len) return false;
+
+  *payload = script + payload_offset;
+  *payload_len = push_len;
+  return true;
+}
+
+/* Inputs' common account, for the change check below. */
+typedef struct {
+  bool agree;  // all inputs have the same path length and first 3 levels
+  size_t path_len;
+  uint32_t prefix[3];
+} PsbtInputAccount;
+
+/* An output counts as change, and is left off the screen, only if
+ *  - its key path is in the same account as the inputs: same purpose, coin
+ *    and account, chain 0 or 1, a normal address index, and the same address
+ *    type (Taproot, the only input type accepted here), as Trezor requires;
+ *  - and that key path really produces this output's address on this wallet.
+ * Before, the master key fingerprint (and for Taproot the internal key) sent
+ * by the computer was trusted on its own, so a compromised computer could
+ * label a payment to itself as "change" and the screen would not show it.
+ * Without the account rule it could still hide part of the amount in an
+ * address of this wallet that the wallet app never looks at (a far away
+ * account, a huge index, another address type on the same key), so the
+ * coins would seem lost. Anything else is shown on screen like any output.
+ * Returns 1 for verified change, 0 for an ordinary output (shown on screen),
+ * -1 if deriving the key failed (a failure message was already sent). */
+static int psbt_output_is_own(const CoinInfo *coin,
+                              const KeyOriginInfo *origin,
+                              InputScriptType script_type,
+                              const PsbtInputAccount *inputs,
+                              const char *out_addr) {
+  if (!inputs->agree || script_type != InputScriptType_SPENDTAPROOT ||
+      inputs->path_len != 5 || origin->path_len != 5 ||
+      memcmp(origin->path, inputs->prefix, sizeof(inputs->prefix)) != 0 ||
+      origin->path[3] > PATH_MAX_CHANGE ||
+      origin->path[4] > PATH_MAX_ADDRESS_INDEX) {
+    return 0;
+  }
+  if (!coin_path_check(coin, script_type, origin->path_len, origin->path,
+                       false, SCHEMA_NONE, true)) {
+    return 0;
+  }
+  HDNode *node = fsm_getDerivedNode(coin->curve_name, origin->path,
+                                    origin->path_len, NULL);
+  if (!node) return -1;
+  if (hdnode_fill_public_key(node) != 0) return 0;
+  char addr[MAX_ADDR_SIZE] = {0};
+  if (!compute_address(coin, script_type, node, false, NULL, addr)) return 0;
+  return strcmp(addr, out_addr) == 0 ? 1 : 0;
+}
+
 void fsm_msgSignPsbt(const SignPsbt *msg) {
   CHECK_INITIALIZED
   CHECK_PIN
@@ -938,6 +1011,15 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
 
   const CoinInfo *coin = fsm_getCoin(msg->has_coin_name, msg->coin_name);
   if (!coin) return;
+  /* Only Taproot inputs are signed here. Some coins without Taproot also have
+   * no bech32 prefix (e.g. Dogecoin), and encoding a SegWit output address
+   * with a NULL prefix crashes the wallet. */
+  if (!coin->has_taproot || coin->bech32_prefix == NULL) {
+    fsm_sendFailure(FailureType_Failure_DataError,
+                    "Taproot is not supported for this coin");
+    layoutHome();
+    return;
+  }
   PSBT psbt = {0};
 
   if (!psbt_deserialize(msg->psbt.bytes, msg->psbt.size, &psbt)) {
@@ -958,6 +1040,7 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
   int64_t total_out = 0;
   int64_t change_out = 0;
   bool contains_script_path_spending = false;
+  PsbtInputAccount in_account = {.agree = true};
   for (int i = 0; i < psbt.inputs_len; i++) {
     PartiallySignedInput *input = &psbt.inputs[i];
     CHECK_PARAM(input->prev_txid_lookuped || psbt.tx_lookuped,
@@ -997,6 +1080,19 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
       layoutHome();
       return;
     }
+    {
+      const KeyOriginInfo *ko = &input->tap_bip32_path.key_origin;
+      if (ko->path_len < 3) {
+        in_account.agree = false;
+      } else if (i == 0) {
+        in_account.path_len = ko->path_len;
+        memcpy(in_account.prefix, ko->path, sizeof(in_account.prefix));
+      } else if (ko->path_len != in_account.path_len ||
+                 memcmp(in_account.prefix, ko->path,
+                        sizeof(in_account.prefix)) != 0) {
+        in_account.agree = false;
+      }
+    }
     HDNode *t_node = fsm_getDerivedNode(
         coin->curve_name, input->tap_bip32_path.key_origin.path,
         input->tap_bip32_path.key_origin.path_len, NULL);
@@ -1019,12 +1115,21 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
         contains_script_path_spending = true;
       }
     }
+    // From OneKey 3.21: no negative amounts, no overflow.
+    CHECK_PARAM(amount >= 0 && amount <= INT64_MAX - total_in,
+                "invalid psbt, input amount")
     total_in += amount;
     sig_hasher_add_input(&hasher, input);
   }
   for (int i = 0; i < psbt.outputs_len; i++) {
     bool is_change = false;
     PartiallySignedOutput *output = &psbt.outputs[i];
+    // From OneKey 3.21.
+    CHECK_PARAM(
+        !(output->bip32_path_lookuped && output->tap_bip32_path_lookuped),
+        "invalid psbt, multiple derivation paths")
+    CHECK_PARAM(output->amount >= 0 && output->amount <= INT64_MAX - total_out,
+                "invalid psbt, output amount")
     uint8_t witness_version = 0;
     bool is_wit =
         is_witness(output->script, output->script_len, &witness_version);
@@ -1053,8 +1158,14 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
         CHECK_PARAM(contains_script_path_spending && psbt.inputs_len == 1,
                     "OpReturn output should have 0 value");
       }
-      op_return_data_len = output->script_len - 2;
-      memcpy(op_return_data, output->script + 2, op_return_data_len);
+      const uint8_t *payload = NULL;
+      size_t payload_len = 0;
+      CHECK_PARAM(parse_op_return_data(output->script, output->script_len,
+                                       &payload, &payload_len) &&
+                      payload_len <= sizeof(op_return_data),
+                  "invalid op_return data");
+      memcpy(op_return_data, payload, payload_len);
+      op_return_data_len = (uint8_t)payload_len;
     } else {
       fsm_sendFailure(FailureType_Failure_DataError, "invalid output type");
       layoutHome();
@@ -1067,8 +1178,25 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
         uint32_t mfp_u32 = mfp[0] << 24 | mfp[1] << 16 | mfp[2] << 8 | mfp[3];
         CHECK_PARAM(mfp_u32 == root_fingerprint,
                     "invalid psbt, fingerprint mismatch");
-        change_out += output->amount;
-        is_change = true;
+        int own = 0;
+        if (is_wit && output->script_len == 22) {
+          own = psbt_output_is_own(coin, &output->bip32_path.key_origin,
+                                   InputScriptType_SPENDWITNESS,
+                                   &in_account, out_addr);
+        } else if (!is_wit && is_p2sh(output->script, output->script_len)) {
+          own = psbt_output_is_own(coin, &output->bip32_path.key_origin,
+                                   InputScriptType_SPENDP2SHWITNESS,
+                                   &in_account, out_addr);
+        } else if (!is_wit && is_p2pkh(output->script, output->script_len)) {
+          own = psbt_output_is_own(coin, &output->bip32_path.key_origin,
+                                   InputScriptType_SPENDADDRESS,
+                                   &in_account, out_addr);
+        }
+        if (own < 0) return;
+        if (own == 1) {
+          change_out += output->amount;
+          is_change = true;
+        }
       }
     } else if (is_wit && witness_version == 1) {
       if (output->tap_bip32_path_lookuped) {
@@ -1079,8 +1207,14 @@ void fsm_msgSignPsbt(const SignPsbt *msg) {
                      memcmp(output->tap_bip32_path.x_only_pubkey,
                             output->tap_internal_key, 32) == 0),
                     "invalid parameters, only key path change is allowed");
-        change_out += output->amount;
-        is_change = true;
+        int own = psbt_output_is_own(coin, &output->tap_bip32_path.key_origin,
+                                     InputScriptType_SPENDTAPROOT,
+                                   &in_account, out_addr);
+        if (own < 0) return;
+        if (own == 1) {
+          change_out += output->amount;
+          is_change = true;
+        }
       }
     }
 

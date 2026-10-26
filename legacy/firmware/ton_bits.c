@@ -14,6 +14,12 @@ void bitstring_init(BitString_t* self) {
 }
 
 void bitstring_write_bit(BitString_t* self, int8_t v) {
+  // Never write past the buffer. The cursor keeps counting so that
+  // ton_hash_cell() sees the cell is too long and refuses it.
+  if (self->data_cursor >= sizeof(self->data) * 8) {
+    if (self->data_cursor < UINT16_MAX) self->data_cursor++;
+    return;
+  }
   if (v > 0) {
     // this.#buffer[(n / 8) | 0] |= 1 << (7 - (n % 8));
     self->data[(self->data_cursor / 8) | 0] |=
@@ -68,8 +74,8 @@ void bitstring_write_coins_bytes(BitString_t* self, const uint8_t* v,
   }
 }
 
-void bitstring_write_buffer(BitString_t* self, uint8_t* v, uint8_t length) {
-  for (int i = 0; i < length; i++) {
+void bitstring_write_buffer(BitString_t* self, uint8_t* v, size_t length) {
+  for (size_t i = 0; i < length; i++) {
     bitstring_write_uint(self, v[i], 8);
   }
 }

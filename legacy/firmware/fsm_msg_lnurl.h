@@ -29,6 +29,7 @@ void fsm_msgLnurlAuth(const LnurlAuth *msg) {
   if (!layout_lnurl_auth(msg)) {
     fsm_sendFailure(FailureType_Failure_ActionCancelled, NULL);
     layoutHome();
+    return;  // from OneKey 3.21: it used to sign even after a rejection
   }
   uint32_t address_n[8] = {0};
   // # m/138'/0

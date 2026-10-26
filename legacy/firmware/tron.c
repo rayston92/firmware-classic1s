@@ -164,7 +164,9 @@ int pack_contract(TronSignTx *msg, uint8_t *buf, int *index,
 
   int ret = *index, len = 0, cmessage_len = 0, cmessage_index = 0, capi_len = 0,
       capi_index = 0;
-  uint8_t cmessage[1024] = {0};
+  /* TriggerSmartContract.data alone can be 2048 bytes (see
+   * messages-tron.options), so 1024 overflowed the stack. */
+  uint8_t cmessage[2560] = {0};
   uint8_t capi[64] = {0};
   uint8_t addr_raw[MAX_ADDR_RAW_SIZE] = {0};
 
@@ -1003,7 +1005,7 @@ refresh_menu:
   }
   oledRefresh();
 
-  HANDLE_KEY(bubble_key)
+  HANDLE_KEY(bubble_key);
 }
 
 bool layoutCancelAllUnfreezeV2Sign(const char *signer_str) {
@@ -1046,7 +1048,7 @@ refresh_menu:
   }
   oledRefresh();
 
-  HANDLE_KEY(bubble_key)
+  HANDLE_KEY(bubble_key);
 }
 
 bool tron_sign_tx(TronSignTx *msg, const char *owner_address,
@@ -1092,6 +1094,13 @@ bool tron_sign_tx(TronSignTx *msg, const char *owner_address,
             16) == 0) {
       token = get_tron_token_by_address(
           msg->contract.trigger_smart_contract.contract_address);
+      /* DIY: an unknown contract comes back as the "UNKN" placeholder, which
+       * was shown as a transfer of "UNKN" tokens without naming the contract.
+       * Treat it as a contract call instead: the screen then shows the
+       * contract address and the call data. */
+      if (token != NULL && strcmp(token->ticker, " UNKN") == 0) {
+        token = NULL;
+      }
       if (tron_eth_2_trx_address(
               &msg->contract.trigger_smart_contract.data.bytes[4 + 12], to_str,
               sizeof(to_str)) < 34) {
@@ -1101,8 +1110,33 @@ bool tron_sign_tx(TronSignTx *msg, const char *owner_address,
       }
       memcpy(value_bytes,
              &msg->contract.trigger_smart_contract.data.bytes[4 + 32], 32);
+      /* DIY: for a contract that is not a known token, the call is shown as
+       * a blind call to the contract, so show the contract's address, not
+       * the recipient found inside the call data. Before, the screen named
+       * that recipient as the "contract address". */
+      if (token == NULL) {
+        strlcpy(to_str, msg->contract.trigger_smart_contract.contract_address,
+                sizeof(to_str));
+      }
     } else {
       memcpy(to_str, msg->contract.trigger_smart_contract.contract_address, 36);
+    }
+    /* DIY: TRX sent along with a contract call (call_value) was never shown.
+     * Show it as the amount; refuse it with a token transfer, whose screen
+     * shows only the token amount. A TRC-10 token amount sent with the call
+     * (call_token_value) was never shown either; it is refused. */
+    if (msg->contract.trigger_smart_contract.call_token_value) {
+      fsm_sendFailure(FailureType_Failure_DataError,
+                      "Token value with a contract call is not supported");
+      return false;
+    }
+    if (msg->contract.trigger_smart_contract.call_value) {
+      if (token != NULL) {
+        fsm_sendFailure(FailureType_Failure_DataError,
+                        "TRX value with a token transfer is not supported");
+        return false;
+      }
+      amount = msg->contract.trigger_smart_contract.call_value;
     }
   } else if (msg->contract.has_freeze_balance_contract) {
     if (!layoutFreezeSign(msg)) {
@@ -1261,7 +1295,9 @@ bool tron_sign_tx(TronSignTx *msg, const char *owner_address,
 }
 
 void tron_format_amount(const uint64_t amount, char *buf, int buflen) {
-  char str_amount[12] = {0};
+  /* DIY: was 12 bytes, too small for amounts like 1234567.123456 TRX, which
+   * then showed as an empty amount. */
+  char str_amount[32] = {0};
   bn_format_uint64(amount, NULL, NULL, 6, 0, false, 0, str_amount,
                    sizeof(str_amount));
   snprintf(buf, buflen, "%s TRX", str_amount);

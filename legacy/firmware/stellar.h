@@ -78,7 +78,7 @@ bool stellar_confirmBumpSequenceOp(const StellarBumpSequenceOp *msg);
 void stellar_layoutTransactionDialog(const char *line1, const char *line2,
                                      const char *line3, const char *line4,
                                      const char *line5);
-void stellar_layoutTransactionSummary(const StellarSignTx *msg);
+bool stellar_layoutTransactionSummary(const StellarSignTx *msg);
 void stellar_layoutSigningDialog(const char *line1, const char *line2,
                                  const char *line3, const char *line4,
                                  const char *line5, uint32_t *address_n,

@@ -26,6 +26,12 @@ if ldd "$ELF" | grep -q libSDL2; then
   echo "This is the desktop test build. Rebuild with DIY_HAT=1 (see diy/README.md)." >&2
   exit 1
 fi
+# A build with the debug interface could hand out the recovery phrase.
+if ! grep -aq "DIY-BUILD-KIND:WALLET" "$ELF" || grep -aq "DIY-BUILD-KIND:TEST" "$ELF" ||
+  grep -aq "fsm_msgDebugLinkGetState" "$ELF"; then
+  echo "This program is not a wallet build (it may have the debug interface). Rebuild with DEBUG_LINK=0." >&2
+  exit 1
+fi
 
 RNG=$(cat /sys/class/misc/hw_random/rng_current 2>/dev/null || true)
 if [ -z "$RNG" ] || [ "$RNG" = "none" ] || [ ! -c /dev/hwrng ]; then

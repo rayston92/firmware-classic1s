@@ -155,6 +155,13 @@ DIY := 1
 endif
 DIY ?= 0
 ifeq ($(DIY),1)
+# The debug interface can read the recovery phrase, so a DIY wallet is never
+# built with it. Test builds that need it must say so explicitly.
+ifneq ($(DEBUG_LINK),0)
+ifneq ($(DIY_TEST_BUILD_WITH_DEBUG_LINK),1)
+$(error DIY builds must use DEBUG_LINK=0: the debug interface can read the recovery phrase)
+endif
+endif
 # The makefiles don't notice changed options, so remember the last ones and
 # rebuild everything when they change (for example switching to Bitcoin only).
 DIY_FLAGS_FILE := $(TOP_DIR).diy-flags

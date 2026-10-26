@@ -155,8 +155,8 @@ bool ton_sign_message(const TonSignMessage *msg, const HDNode *node,
   bitstring_init(&payload_bits_data);
   BitString_t *payload_bits = &payload_bits_data;
 
-  CellRef_t payload_ref_data;
-  CellRef_t *payload_ref = &payload_ref_data;
+  CellRef_t payload_refs[4];
+  uint8_t payload_refs_count = 0;
 
   unsigned char raw_data[1024];
   bool is_raw_data = false;
@@ -253,7 +253,7 @@ bool ton_sign_message(const TonSignMessage *msg, const HDNode *node,
     // create payload
     if (is_raw_data) {
       if (!ton_parse_boc(raw_data, data_len, payload, payload_bits,
-                         payload_ref)) {
+                         payload_refs, &payload_refs_count)) {
         fsm_sendFailure(FailureType_Failure_ProcessError,
                         "Failed to create raw data body");
         return false;
@@ -297,17 +297,16 @@ bool ton_sign_message(const TonSignMessage *msg, const HDNode *node,
       }
     }
 
-    if (!msg->has_comment) {
-      ton_create_jetton_transfer_body(
-          parsed_dest.workchain, parsed_dest.hash,
-          msg->jetton_amount_bytes.bytes, msg->jetton_amount_bytes.size, 0,
-          NULL, parsed_resp.workchain, parsed_resp.hash, payload);
-    } else {
-      ton_create_jetton_transfer_body(
-          parsed_dest.workchain, parsed_dest.hash,
-          msg->jetton_amount_bytes.bytes, msg->jetton_amount_bytes.size,
-          msg->fwd_fee, msg->comment, parsed_resp.workchain, parsed_resp.hash,
-          payload);
+    if (!ton_create_jetton_transfer_body(
+            parsed_dest.workchain, parsed_dest.hash,
+            msg->jetton_amount_bytes.bytes, msg->jetton_amount_bytes.size,
+            msg->has_comment ? msg->fwd_fee : 0,
+            msg->has_comment ? msg->comment : NULL, parsed_resp.workchain,
+            parsed_resp.hash, payload)) {
+      fsm_sendFailure(FailureType_Failure_DataError,
+                      "Jetton transfer body too long");
+      layoutHome();
+      return false;
     }
   }
 
@@ -321,43 +320,44 @@ bool ton_sign_message(const TonSignMessage *msg, const HDNode *node,
 
     for (int i = 0; i < ext_dest_count; i++) {
       ext_destination_ptrs[i] = msg->ext_destination[i];
-      ext_payload_ptrs[i] = msg->ext_payload[i];
+      // Show each extra payload by what it is (memo text or BOC data), the
+      // same way ton_create_message_digest() puts it into the signed message.
+      ext_payload_ptrs[i] =
+          (pb_size_t)i < msg->ext_payload_count ? msg->ext_payload[i] : NULL;
 
       char amount_str[60];
       ton_format_toncoin_amount(msg->ext_ton_amount[i], amount_str,
                                 sizeof(amount_str));
 
-      if (msg->has_comment) {
-        if (strlen(msg->comment) >= 8 &&
-            memcmp(msg->comment, "b5ee9c72", 8) == 0) {  // raw data
-          data_len = strlen(ext_payload_ptrs[i]) / 2;
-          if (!layoutTonSign("Ton", false, amount_str, ext_destination_ptrs[i],
-                             usr_friendly_address, NULL, NULL,
-                             (const uint8_t *)ext_payload_ptrs[i], data_len,
-                             NULL)) {
-            fsm_sendFailure(FailureType_Failure_ActionCancelled,
-                            "Signing cancelled");
+      const uint8_t *display_data = NULL;
+      uint16_t display_data_len = 0;
+      const char *display_memo = NULL;
+      if (ext_payload_ptrs[i] != NULL) {
+        size_t ext_payload_len = strlen(ext_payload_ptrs[i]);
+        if (ext_payload_len >= 8 &&
+            memcmp(ext_payload_ptrs[i], "b5ee9c72", 8) == 0) {
+          unsigned int decoded_len = ext_payload_len / 2;
+          if (decoded_len >= sizeof(raw_data) ||
+              hex2data(ext_payload_ptrs[i], raw_data, &decoded_len) != 0) {
+            fsm_sendFailure(FailureType_Failure_DataError,
+                            "Invalid extended BOC payload");
             layoutHome();
             return false;
           }
-        } else {  // memo
-          if (!layoutTonSign("Ton", false, amount_str, ext_destination_ptrs[i],
-                             usr_friendly_address, NULL, NULL, NULL, 0,
-                             ext_payload_ptrs[i])) {
-            fsm_sendFailure(FailureType_Failure_ActionCancelled,
-                            "Signing cancelled");
-            layoutHome();
-            return false;
-          }
+          display_data = raw_data;
+          display_data_len = decoded_len;
+        } else if (ext_payload_len > 0) {
+          display_memo = ext_payload_ptrs[i];
         }
-      } else {  // no comment
-        if (!layoutTonSign("Ton", false, amount_str, ext_destination_ptrs[i],
-                           usr_friendly_address, NULL, NULL, NULL, 0, NULL)) {
-          fsm_sendFailure(FailureType_Failure_ActionCancelled,
-                          "Signing cancelled");
-          layoutHome();
-          return false;
-        }
+      }
+
+      if (!layoutTonSign("Ton", false, amount_str, ext_destination_ptrs[i],
+                         usr_friendly_address, NULL, NULL, display_data,
+                         display_data_len, display_memo)) {
+        fsm_sendFailure(FailureType_Failure_ActionCancelled,
+                        "Signing cancelled");
+        layoutHome();
+        return false;
       }
     }
   }
@@ -385,9 +385,9 @@ bool ton_sign_message(const TonSignMessage *msg, const HDNode *node,
       msg->expire_at, msg->seqno, parsed_dest.is_bounceable,
       parsed_dest.workchain, parsed_dest.hash, msg->ton_amount, msg->mode,
       !comment_inline ? payload : NULL, is_jetton,
-      comment_inline ? msg->comment : NULL, payload_bits, payload_ref,
-      ext_destination_ptrs, msg->ext_ton_amount, ext_payload_ptrs,
-      ext_dest_count, digest);
+      comment_inline ? msg->comment : NULL, payload_bits, payload_refs,
+      payload_refs_count, ext_destination_ptrs, msg->ext_ton_amount,
+      ext_payload_ptrs, ext_dest_count, digest);
 
   if (!create_digest) {
     fsm_sendFailure(FailureType_Failure_ProcessError,

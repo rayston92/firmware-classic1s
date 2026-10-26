@@ -830,6 +830,9 @@ uint8_t protectWaitKey(uint32_t time_out, uint8_t mode) {
 
     key = keyScan();
     if (key != KEY_NULL) {
+#if EMULATOR
+      system_millis_lock_start = timer_ms();  // a key press counts as use
+#endif
       if (device_sleep_state) device_sleep_state = SLEEP_CANCEL_BY_BUTTON;
       if (mode == 0) {
         break;
@@ -1028,10 +1031,11 @@ pin_set:
   input:
     pin = protectInputPin(_(T__ENTER_PIN), DEFAULT_PIN_LEN, MAX_PIN_LEN, true);
 
-    if (pin == NULL) {
+    if (pin == NULL || pin == PIN_CANCELED_BY_BUTTON) {
+      memzero(old_pin, sizeof(old_pin));
+      memzero(new_pin, sizeof(new_pin));
       return false;
-    } else if (pin == PIN_CANCELED_BY_BUTTON)
-      return false;
+    }
 
     bool ret = config_unlock(pin);
     if (ret == false) {
@@ -1043,6 +1047,8 @@ pin_set:
         NULL, NULL, NULL, _(C__SET_A_4_TO_9_DIGITS_PIN_TO_PROTECT_YOUR_WALLET));
     key = protectWaitKey(0, 1);
     if (key != KEY_CONFIRM) {
+      memzero(old_pin, sizeof(old_pin));
+      memzero(new_pin, sizeof(new_pin));
       return false;
     }
     strlcpy(old_pin, pin, sizeof(old_pin));
@@ -1065,6 +1071,8 @@ pin_set:
           _(C__SET_A_4_TO_9_DIGITS_PIN_TO_PROTECT_YOUR_WALLET));
       key = protectWaitKey(0, 1);
       if (key != KEY_CONFIRM) {
+        memzero(old_pin, sizeof(old_pin));
+        memzero(new_pin, sizeof(new_pin));
         return false;
       }
     }
@@ -1074,6 +1082,8 @@ retry:
   pin =
       protectInputPin(_(T__ENTER_NEW_PIN), DEFAULT_PIN_LEN, MAX_PIN_LEN, true);
   if (pin == PIN_CANCELED_BY_BUTTON) {
+    memzero(old_pin, sizeof(old_pin));
+    memzero(new_pin, sizeof(new_pin));
     return false;
   } else if (pin == NULL || pin[0] == '\0') {
     memzero(old_pin, sizeof(old_pin));
@@ -1086,17 +1096,21 @@ retry:
 
   pin = protectInputPin(_(T__ENTER_NEW_PIN_AGAIN), DEFAULT_PIN_LEN, MAX_PIN_LEN,
                         true);
+  /* Wipe the PIN copies on every way out. Keep old_pin while going back to
+   * "retry": it is needed there, and wiping it made the change fail. */
   if (pin == NULL) {
+    memzero(new_pin, sizeof(new_pin));
+    if (set && layoutLast != layoutHome) {
+      goto retry;
+    }
+    memzero(old_pin, sizeof(old_pin));
+    return false;
+  } else if (pin == PIN_CANCELED_BY_BUTTON) {
     memzero(old_pin, sizeof(old_pin));
     memzero(new_pin, sizeof(new_pin));
-    if (set) {
-      goto_check(retry);
-    }
     return false;
-  } else if (pin == PIN_CANCELED_BY_BUTTON)
-    return false;
+  }
   if (strncmp(new_pin, pin, sizeof(new_pin)) != 0) {
-    memzero(old_pin, sizeof(old_pin));
     memzero(new_pin, sizeof(new_pin));
     layoutDialogCenterAdapterV2(
         NULL, &bmp_icon_error, NULL, &bmp_bottom_right_retry, NULL, NULL, NULL,
@@ -1107,6 +1121,7 @@ retry:
       if (key == KEY_CONFIRM) {
         goto retry;
       } else if (key == KEY_NULL) {
+        memzero(old_pin, sizeof(old_pin));
         return false;
       }
     }

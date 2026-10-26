@@ -20,7 +20,7 @@ void bitstring_write_uint(BitString_t* self, uint64_t v, uint8_t bits);
 void bitstring_write_coins(BitString_t* self, uint64_t v);
 void bitstring_write_coins_bytes(BitString_t* self, const uint8_t* v,
                                  uint8_t length);
-void bitstring_write_buffer(BitString_t* self, uint8_t* v, uint8_t length);
+void bitstring_write_buffer(BitString_t* self, uint8_t* v, size_t length);
 
 void bitstring_write_address(BitString_t* self, uint8_t chain, uint8_t* hash);
 void bitstring_write_null_address(BitString_t* self);

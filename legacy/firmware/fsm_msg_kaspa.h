@@ -42,7 +42,12 @@ void fsm_msgKaspaGetAddress(const KaspaGetAddress *msg) {
   uint32_t key_len = is_schnorr ? 32 : 33;
   bool use_tweak = (msg->has_use_tweak && !msg->use_tweak) ? false : true;
 
-  kaspa_get_address(pub_key, key_len, msg->prefix, resp->address, use_tweak);
+  // Encode into a buffer large enough for any prefix, then check that the
+  // address fits the reply (KaspaAddress.address is 72 bytes).
+  char address[80] = {0};
+  kaspa_get_address(pub_key, key_len, msg->prefix, address, use_tweak);
+  CHECK_PARAM(strlen(address) < sizeof(resp->address), "Address too long");
+  strlcpy(resp->address, address, sizeof(resp->address));
 
   if (msg->has_show_display && msg->show_display) {
     char desc[64] = {0};
@@ -69,13 +74,21 @@ void fsm_msgKaspaGetAddress(const KaspaGetAddress *msg) {
     RESP_INIT(KaspaTxInputRequest);                                         \
     resp->request_index = input_index++;                                    \
     resp->has_signature = true;                                             \
-    kaspa_sign_sighash(node, msg->raw_message.bytes, msg->raw_message.size, \
-                       resp->signature.bytes, &resp->signature.size);       \
+    if (!kaspa_sign_sighash(node, msg->raw_message.bytes,                   \
+                            msg->raw_message.size, resp->signature.bytes,   \
+                            &resp->signature.size)) {                       \
+      kaspa_signing_abort();                                                \
+      return;                                                               \
+    }                                                                       \
     msg_write(MessageType_MessageType_KaspaTxInputRequest, resp);           \
   } else {                                                                  \
     RESP_INIT(KaspaSignedTx);                                               \
-    kaspa_sign_sighash(node, msg->raw_message.bytes, msg->raw_message.size, \
-                       resp->signature.bytes, &resp->signature.size);       \
+    if (!kaspa_sign_sighash(node, msg->raw_message.bytes,                   \
+                            msg->raw_message.size, resp->signature.bytes,   \
+                            &resp->signature.size)) {                       \
+      kaspa_signing_abort();                                                \
+      return;                                                               \
+    }                                                                       \
     msg_write(MessageType_MessageType_KaspaSignedTx, resp);                 \
     kaspa_signing_abort();                                                  \
   }

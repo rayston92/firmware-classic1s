@@ -889,8 +889,21 @@ int hdnode_private_ckd(HDNode *inout, uint32_t i) {
 }
 
 #if defined(EMULATOR) && EMULATOR
+/* Sign with the key itself, without the Taproot tweak, as the secure
+ * element does on the device (se_chip.c). Used for Taproot script-path
+ * spending and Nostr. This used to call hdnode_bip340_sign_digest, which
+ * tweaks the key first, so those signatures did not verify. */
 int hdnode_bip340_sign_digest_internal(const HDNode *node,
                                        const uint8_t *digest, uint8_t sig[64]) {
-  return hdnode_bip340_sign_digest(node, digest, sig);
+  return zkp_bip340_sign_digest(node->private_key, digest, sig, NULL);
+}
+
+/* ECDH with the untweaked key, as on the device (se_chip.c). */
+int hdnode_bip340_get_shared_key_ln(const HDNode *node,
+                                    const uint8_t *peer_public_key,
+                                    uint8_t session_key[65]) {
+  int result_size = 0;
+  return hdnode_get_shared_key(node, peer_public_key, session_key,
+                               &result_size);
 }
 #endif  // defined(EMULATOR) && EMULATOR

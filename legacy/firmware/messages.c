@@ -247,7 +247,30 @@ void msg_process(char type, uint16_t msg_id, const pb_msgdesc_t *fields,
 #else
   static uint8_t msg_decoded[MSG_IN_DECODED_SIZE];
 #endif
-  
+
+#if EMULATOR
+  /* DIY: Cardano is turned off on this wallet. The emulator build does not
+   * handle Cardano keys completely (some requests answered with keys, others
+   * crashed the wallet or could not sign), so every Cardano request is
+   * refused instead. Use another wallet for Cardano. */
+  if (type == 'n' &&
+      ((msg_id >= MessageType_MessageType_CardanoGetPublicKey &&
+        msg_id <= MessageType_MessageType_CardanoTxReferenceInput) ||
+       msg_id == MessageType_MessageType_CardanoSignMessage)) {
+    fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
+                    "Cardano is not available on this device");
+    return;
+  }
+  /* DIY: Alephium is turned off too. Its transaction decoder does not follow
+   * Alephium's format exactly, so a transaction built by the computer could
+   * be shown with outputs other than the ones signed. */
+  if (type == 'n' && msg_id >= MessageType_MessageType_AlephiumGetAddress &&
+      msg_id <= MessageType_MessageType_AlephiumMessageSignature) {
+    fsm_sendFailure(FailureType_Failure_UnexpectedMessage,
+                    "Alephium is not available on this device");
+    return;
+  }
+#endif
   memzero(msg_decoded, sizeof(msg_decoded));
   pb_istream_t stream = pb_istream_from_buffer(msg_raw, msg_size);
   bool status = pb_decode(&stream, fields, msg_decoded);

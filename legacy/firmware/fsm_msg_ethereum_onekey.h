@@ -128,7 +128,12 @@ void fsm_msgEthereumSignTxEIP1559OneKey(
 }
 
 void fsm_msgEthereumTxAckOneKey(const EthereumTxAckOneKey *msg) {
-  CHECK_UNLOCKED
+  if (!session_isUnlocked()) {
+    ethereum_signing_abort_onekey();
+    fsm_sendFailure(FailureType_Failure_ProcessError, "Locked");
+    layoutHome();
+    return;
+  }
 
   ethereum_signing_txack_onekey(msg);
 }

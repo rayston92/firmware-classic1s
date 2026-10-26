@@ -53,6 +53,20 @@ static bool stellar_signing = false;
 static StellarTransaction stellar_activeTx;
 
 /*
+ * Counts the current operation as confirmed. Returns false if an error found
+ * while showing or hashing it (for example an invalid asset issuer in
+ * stellar_format_asset() or stellar_hashupdate_asset()) has already sent a
+ * Failure and ended the session; the operation must then not be signed.
+ */
+static bool stellar_operationConfirmed(void) {
+  if (!stellar_signing) {
+    return false;
+  }
+  stellar_activeTx.confirmed_operations++;
+  return true;
+}
+
+/*
  * Starts the signing process and parses the transaction header
  */
 bool stellar_signingInit(const StellarSignTx *msg) {
@@ -83,6 +97,7 @@ bool stellar_signingInit(const StellarSignTx *msg) {
   // Public key comes from deriving the specified account path
   const HDNode *node = stellar_deriveNode(msg->address_n, msg->address_n_count);
   if (!node) {
+    stellar_signing = false;  // fsm_getDerivedNode() sent the Failure
     return false;
   }
   memcpy(&(stellar_activeTx.signing_pubkey), node->public_key + 1,
@@ -134,6 +149,7 @@ bool stellar_signingInit(const StellarSignTx *msg) {
       stellar_hashupdate_bytes(msg->memo_hash.bytes, 32);
       break;
     default:
+      stellar_signing = false;
       fsm_sendFailure(FailureType_Failure_DataError,
                       "Stellar invalid memo type");
       return false;
@@ -164,6 +180,13 @@ void stellar_signingAbort(void) {
 }
 
 static void stellar_signingFail(const char *reason) {
+  // Send only one Failure per signing session. Several error paths call this
+  // twice (for example a cancelled source account dialog, then the caller),
+  // and a second Failure would be read as the reply to the host's next
+  // message.
+  if (!stellar_signing) {
+    return;
+  }
   if (!reason) {
     reason = "Unknown error";
   }
@@ -244,8 +267,7 @@ bool stellar_confirmCreateAccountOp(const StellarCreateAccountOp *msg) {
   // Hash: starting amount
   stellar_hashupdate_uint64(msg->starting_balance);
 
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmPaymentOp(const StellarPaymentOp *msg) {
@@ -279,6 +301,7 @@ bool stellar_confirmPaymentOp(const StellarPaymentOp *msg) {
   char str_asset_row[32] = {0};
   memzero(str_asset_row, sizeof(str_asset_row));
   stellar_format_asset(&(msg->asset), str_asset_row, sizeof(str_asset_row));
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
 
   char str_pay_amount[32] = {0};
   char str_amount[32] = {0};
@@ -302,8 +325,7 @@ bool stellar_confirmPaymentOp(const StellarPaymentOp *msg) {
   stellar_hashupdate_uint64(msg->amount);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmPathPaymentStrictReceiveOp(
@@ -338,8 +360,10 @@ bool stellar_confirmPathPaymentStrictReceiveOp(
   char str_dest_asset[32] = {0};
   stellar_format_asset(&(msg->send_asset), str_send_asset,
                        sizeof(str_send_asset));
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_asset(&(msg->destination_asset), str_dest_asset,
                        sizeof(str_dest_asset));
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
 
   char str_pay_amount[32] = {0};
   char str_amount[32] = {0};
@@ -401,8 +425,7 @@ bool stellar_confirmPathPaymentStrictReceiveOp(
   }
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmPathPaymentStrictSendOp(
@@ -437,8 +460,10 @@ bool stellar_confirmPathPaymentStrictSendOp(
   char str_dest_asset[32] = {0};
   stellar_format_asset(&(msg->send_asset), str_send_asset,
                        sizeof(str_send_asset));
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_asset(&(msg->destination_asset), str_dest_asset,
                        sizeof(str_dest_asset));
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
 
   char str_pay_amount[32] = {0};
   char str_amount[32] = {0};
@@ -499,8 +524,7 @@ bool stellar_confirmPathPaymentStrictSendOp(
   }
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmManageBuyOfferOp(const StellarManageBuyOfferOp *msg) {
@@ -538,6 +562,8 @@ bool stellar_confirmManageBuyOfferOp(const StellarManageBuyOfferOp *msg) {
 
   stellar_format_asset(&(msg->buying_asset), str_buying_asset,
                        sizeof(str_buying_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_stroops(msg->amount, str_buying_amount,
                          sizeof(str_buying_amount));
 
@@ -554,6 +580,8 @@ bool stellar_confirmManageBuyOfferOp(const StellarManageBuyOfferOp *msg) {
 
   stellar_format_asset(&(msg->selling_asset), str_selling_asset,
                        sizeof(str_selling_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_price(msg->price_n, msg->price_d, str_price,
                        sizeof(str_price));
 
@@ -586,8 +614,7 @@ bool stellar_confirmManageBuyOfferOp(const StellarManageBuyOfferOp *msg) {
   stellar_hashupdate_uint64(msg->offer_id);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmManageSellOfferOp(const StellarManageSellOfferOp *msg) {
@@ -625,6 +652,8 @@ bool stellar_confirmManageSellOfferOp(const StellarManageSellOfferOp *msg) {
 
   stellar_format_asset(&(msg->selling_asset), str_selling_asset,
                        sizeof(str_selling_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_stroops(msg->amount, str_sell_amount, sizeof(str_sell_amount));
 
   /*
@@ -640,6 +669,8 @@ bool stellar_confirmManageSellOfferOp(const StellarManageSellOfferOp *msg) {
 
   stellar_format_asset(&(msg->buying_asset), str_buying_asset,
                        sizeof(str_buying_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_price(msg->price_n, msg->price_d, str_price,
                        sizeof(str_price));
 
@@ -672,8 +703,7 @@ bool stellar_confirmManageSellOfferOp(const StellarManageSellOfferOp *msg) {
   stellar_hashupdate_uint64(msg->offer_id);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmCreatePassiveSellOfferOp(
@@ -703,6 +733,8 @@ bool stellar_confirmCreatePassiveSellOfferOp(
 
   stellar_format_asset(&(msg->selling_asset), str_selling_asset,
                        sizeof(str_selling_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_stroops(msg->amount, str_sell_amount, sizeof(str_sell_amount));
 
   /*
@@ -718,6 +750,8 @@ bool stellar_confirmCreatePassiveSellOfferOp(
 
   stellar_format_asset(&(msg->buying_asset), str_buying_asset,
                        sizeof(str_buying_asset));
+
+  if (!stellar_signing) return false;  // DIY: asset was invalid, Failure sent
   stellar_format_price(msg->price_n, msg->price_d, str_price,
                        sizeof(str_price));
 
@@ -748,8 +782,7 @@ bool stellar_confirmCreatePassiveSellOfferOp(
   stellar_hashupdate_uint32(msg->price_d);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmSetOptionsOp(const StellarSetOptionsOp *msg) {
@@ -1050,8 +1083,7 @@ bool stellar_confirmSetOptionsOp(const StellarSetOptionsOp *msg) {
   }
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmChangeTrustOp(const StellarChangeTrustOp *msg) {
@@ -1090,8 +1122,7 @@ bool stellar_confirmChangeTrustOp(const StellarChangeTrustOp *msg) {
   // Validate destination account and convert to bytes
   uint8_t asset_issuer_bytes[STELLAR_KEY_SIZE] = {0};
   if (!stellar_getAddressBytes(msg->asset.issuer, asset_issuer_bytes)) {
-    stellar_signingFail("User canceled");
-    fsm_sendFailure(FailureType_Failure_ProcessError, "Invalid asset issuer");
+    stellar_signingFail("Invalid asset issuer");
     return false;
   }
 
@@ -1111,8 +1142,7 @@ bool stellar_confirmChangeTrustOp(const StellarChangeTrustOp *msg) {
   stellar_hashupdate_uint64(msg->limit);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmAllowTrustOp(const StellarAllowTrustOp *msg) {
@@ -1186,8 +1216,7 @@ bool stellar_confirmAllowTrustOp(const StellarAllowTrustOp *msg) {
   stellar_hashupdate_bool(msg->is_authorized);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmAccountMergeOp(const StellarAccountMergeOp *msg) {
@@ -1226,8 +1255,7 @@ bool stellar_confirmAccountMergeOp(const StellarAccountMergeOp *msg) {
   stellar_hashupdate_address(destination_account_bytes);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmManageDataOp(const StellarManageDataOp *msg) {
@@ -1289,8 +1317,7 @@ bool stellar_confirmManageDataOp(const StellarManageDataOp *msg) {
   }
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 bool stellar_confirmBumpSequenceOp(const StellarBumpSequenceOp *msg) {
@@ -1319,8 +1346,7 @@ bool stellar_confirmBumpSequenceOp(const StellarBumpSequenceOp *msg) {
   stellar_hashupdate_uint64(msg->bump_to);
 
   // At this point, the operation is confirmed
-  stellar_activeTx.confirmed_operations++;
-  return true;
+  return stellar_operationConfirmed();
 }
 
 /**
@@ -1765,7 +1791,7 @@ void stellar_hashupdate_bytes(const uint8_t *data, size_t len) {
 /*
  * Displays a summary of the overall transaction
  */
-void stellar_layoutTransactionSummary(const StellarSignTx *msg) {
+bool stellar_layoutTransactionSummary(const StellarSignTx *msg) {
   char str_lines[5][32] = {0};
   memzero(str_lines, sizeof(str_lines));
 
@@ -1801,7 +1827,7 @@ void stellar_layoutTransactionSummary(const StellarSignTx *msg) {
                                   str_addr_rows[1], str_addr_rows[2]);
   if (!protectButton(ButtonRequestType_ButtonRequest_ProtectCall, false)) {
     stellar_signingFail("User canceled");
-    return;
+    return false;
   }
 
   // Reset lines for displaying memo
@@ -1837,7 +1863,7 @@ void stellar_layoutTransactionSummary(const StellarSignTx *msg) {
       break;
     default:
       stellar_signingFail("Stellar invalid memo type");
-      return;
+      return false;
   }
 
   if (needs_memo_hash_confirm) {
@@ -1851,7 +1877,7 @@ void stellar_layoutTransactionSummary(const StellarSignTx *msg) {
                                   str_lines[3], str_lines[4]);
   if (!protectButton(ButtonRequestType_ButtonRequest_ProtectCall, false)) {
     stellar_signingFail("User canceled");
-    return;
+    return false;
   }
 
   // Verify timebounds, if present
@@ -1889,8 +1915,9 @@ void stellar_layoutTransactionSummary(const StellarSignTx *msg) {
                                   str_lines[1], str_lines[2], str_lines[3]);
   if (!protectButton(ButtonRequestType_ButtonRequest_ProtectCall, false)) {
     stellar_signingFail("User canceled");
-    return;
+    return false;
   }
+  return true;
 }
 
 /*

@@ -421,14 +421,16 @@ static bool layoutEthereumConfirmTx(
     if (!is_eip1559) {
       return layoutTransactionSignEVM(
           chain_name, params->chain_id, false, amount, to_str, signer, NULL,
-          NULL, params->data_initial_chunk_bytes, data_total,
-          _(I__ETH_MAXIMUM_FEE_COLON), gas_value, _(I__TOTAL_AMOUNT_COLON),
-          total_amount, NULL, NULL, NULL, NULL);
+          NULL, params->data_initial_chunk_bytes,
+          data_total, _(I__ETH_MAXIMUM_FEE_COLON),
+          gas_value, _(I__TOTAL_AMOUNT_COLON), total_amount, NULL, NULL, NULL,
+          NULL);
     } else {
       return layoutTransactionSignEVM(
           chain_name, params->chain_id, false, amount, to_str, signer, NULL,
-          NULL, params->data_initial_chunk_bytes, data_total, key1, value1,
-          key2, value2, key3, value3, _(I__TOTAL_AMOUNT_COLON), total_amount);
+          NULL, params->data_initial_chunk_bytes,
+          data_total, key1, value1, key2, value2,
+          key3, value3, _(I__TOTAL_AMOUNT_COLON), total_amount);
     }
   } else {
     ethereumFormatAmount(&val, token, amount, sizeof(amount));
@@ -518,7 +520,10 @@ static bool ethereum_signing_init_common(struct signing_params *params) {
   } else {
     data_total = 0;
   }
-  if (params->data_initial_chunk_size > data_total) {
+  /* The first chunk must hold all of the data, or the first 1024 bytes of it.
+   * The confirmation screen shows the data from this buffer, so a shorter
+   * chunk would show zeros where the computer later sends other bytes. */
+  if (params->data_initial_chunk_size != MIN(data_total, 1024U)) {
     fsm_sendFailure(FailureType_Failure_DataError,
                     "Invalid size of initial chunk");
     return false;
@@ -1032,13 +1037,12 @@ void ethereum_message_sign_onekey(const EthereumSignMessageOneKey *msg,
 
 int ethereum_message_verify_onekey(const EthereumVerifyMessageOneKey *msg) {
   if (msg->signature.size != 65) {
-    fsm_sendFailure(FailureType_Failure_DataError, "Malformed signature");
+    // The caller sends the failure; sending one here too gave two replies.
     return 1;
   }
 
   uint8_t pubkeyhash[20] = {0};
   if (!ethereum_parse_onekey(msg->address, pubkeyhash)) {
-    fsm_sendFailure(FailureType_Failure_DataError, "Malformed address");
     return 1;
   }
 

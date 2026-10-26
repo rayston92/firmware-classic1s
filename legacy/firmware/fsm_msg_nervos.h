@@ -74,8 +74,9 @@ void fsm_msgNervosSignTx(const NervosSignTx *msg) {
       msg->data_length > msg->data_initial_chunk.size) {
     nervos_sign_sighash_init(node, msg, resp);
   } else {
-    nervos_sign_sighash(node, msg, resp);
-    msg_write(MessageType_MessageType_NervosSignedTx, resp);
+    if (nervos_sign_sighash(node, msg, resp)) {
+      msg_write(MessageType_MessageType_NervosSignedTx, resp);
+    }
     layoutHome();
   }
 }

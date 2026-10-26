@@ -25,3 +25,12 @@ void diy_harden(void) {
     perror("Could not lock memory in RAM (mlockall); make sure swap is off");
   }
 }
+
+/* Marker that install.sh checks, so a test build with the debug interface
+ * (which can read out the recovery phrase) is never installed as a wallet,
+ * even if the program file was stripped of its symbol names. */
+#if DEBUG_LINK
+__attribute__((used)) const char diy_build_kind[] = "DIY-BUILD-KIND:TEST";
+#else
+__attribute__((used)) const char diy_build_kind[] = "DIY-BUILD-KIND:WALLET";
+#endif
