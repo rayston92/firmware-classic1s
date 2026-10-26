@@ -15,7 +15,7 @@ DIY build changes these things:
 | Stock emulator | DIY build (`DIY=1`) | Where |
 |---|---|---|
 | Random numbers come from a fixed formula starting at 0, so every emulator creates the **same recovery phrase** | Random numbers come from the Pi's Broadcom hardware generator (`/dev/hwrng`, 10:183 only; on the HAT build the driver must be `bcm2835-rng`). The first 0x40000 words (1 MiB) are discarded, Broadcom's warm-up count. NIST SP 800-90B start-up and continuous health tests on every byte, SHA-256 conditioning at 4x oversampling, then hashed with 32 bytes from `getrandom`. Any failure stops the wallet with "Wallet stopped" on the screen and the reason in the log; there is no fallback. | `legacy/emulator/diy/rand_hw.c`, `legacy/Makefile.include` |
-| (not applicable) | Before every start, as root: `hwrng-check` confirms `/dev/hwrng` is the Broadcom block (driver and device tree) and reads its control register through `/dev/mem`. Only `RNG_CTRL = 0x00000001` is accepted (on, all ring oscillators, internal jitter clock, normal speed), the setting Broadcom's own driver code writes; anything else is reprogrammed with Broadcom's sequence and read back. | `diy/hwrng-check.c`, `diy/diywallet.service.in` |
+| (not applicable) | Before every start, as root: `hwrng-check` confirms `/dev/hwrng` is the Broadcom block (driver and device tree) and reads its control register through `/dev/mem`. Only `RNG_CTRL = 0x00000001` is accepted (on, all ring oscillators, internal jitter clock, normal speed), the setting Broadcom's own driver code writes; with anything else the wallet does not start. The check only reads (the registers are mapped read-only) and never changes the generator. | `diy/hwrng-check.c`, `diy/diywallet.service.in` |
 | Listens on every network interface | Listens on 127.0.0.1 only | `legacy/emulator/udp.c` |
 | Storage encryption salt is all zeros | Salt derived from the Pi's serial number | `legacy/emulator/diy/hw_salt.c`, `legacy/firmware/trezor.c` |
 | Screen size 256x128 on this branch | The real Classic size, 128x64 | `legacy/oled.h` |
@@ -72,7 +72,7 @@ Files in this folder:
 | `diywallet.service.in`, `diywallet-usb.service` | systemd services; the wallet runs as its own user with only the screen, keys and hardware random number generator. Before it starts: swap off, text console detached from the framebuffers. No core dumps |
 | `config.txt.snippet` | Screen, keys, USB device mode, Wi-Fi and Bluetooth off |
 | `install.sh` | Installs all of the above; builds and runs `hwrng-check` and stops if it fails; lets only the wallet read the generator; turns swap off |
-| `hwrng-check.c` | Root helper: checks the generator is the Pi's Broadcom block with Broadcom's register settings (repairs them if not). `hwrng-check --test` also runs the FIPS 140-2 statistical tests on 1000 blocks of raw output |
+| `hwrng-check.c` | Root helper: checks, read-only, that the generator is the Pi's Broadcom block with Broadcom's register settings. `hwrng-check --test` also runs the FIPS 140-2 statistical tests on 1000 blocks of raw output |
 | `rng-assess.sh` | Collects 1,000,000 raw bytes for a NIST SP 800-90B entropy assessment (`ea_non_iid`) |
 | `set-home-icon.py` | Replaces the 24x24 home-screen icon in `legacy/gen/bitmaps.c` (the repo's own `generate.py` no longer reproduces that file) |
 | `app-skip-genuine-check.patch` | For the OneKey app (tag v6.6.3): skips the genuine-device check, which a self-built device can never pass |
@@ -129,9 +129,11 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
   the same phrase both times.
 - `hwrng-check` against a simulated Pi (fake sysfs, `/proc/iomem` and
   register file), also as an ARM64 build under qemu: accepts the Broadcom
-  setting, reprograms a changed one (2x speed, clock bypass) to 0x00000001,
-  refuses a non-Broadcom generator. `--test` passes `/dev/urandom` (998 of
-  1000 blocks) and fails a stuck and a biased source on every block.
+  setting; refuses a changed one (2x speed, clock bypass, off), a generator
+  that produces nothing and a non-Broadcom generator, leaving the register
+  file unchanged every time (it is mapped read-only, so a write would
+  crash the program). `--test` passes `/dev/urandom` (998 of 1000 blocks) and
+  fails a stuck and a biased source on every block.
 - The HAT build refuses to start when the active generator's driver is not
   `bcm2835-rng`.
 - Switching between `DIY=1`, `DIY_HAT=1` and `BITCOIN_ONLY=1` without
@@ -234,8 +236,9 @@ Not yet checked on real hardware:
   `rng-assess.sh` and NIST's `ea_non_iid`.
 - What `RNG_CTRL` the Raspberry Pi boot firmware leaves on a Pi Zero 2 W, and
   that `/dev/mem` mapping of the RNG block works on the current Raspberry Pi OS
-  kernel (its configuration has `CONFIG_STRICT_DEVMEM` off). If it doesn't,
-  `hwrng-check` fails and the wallet won't start, which is the safe outcome.
+  kernel (its configuration has `CONFIG_STRICT_DEVMEM` off). If the value is
+  not 0x00000001, or the mapping doesn't work, `hwrng-check` fails and the
+  wallet won't start, which is the safe outcome.
 - The `sh1106-spi` framebuffer orientation on the Waveshare HAT.
 - The USB gadget on a Pi: endpoint addresses as seen by the computer
   (`lsusb -v` should show 0x81 and 0x01), Windows driver binding (the

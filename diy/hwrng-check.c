@@ -3,8 +3,7 @@
  * Pi's own hardware random number generator, set up the way Broadcom's code
  * sets it up. Runs as root, from install.sh and before every wallet start.
  *
- *   hwrng-check              check, and repair the generator's settings if
- *                            needed; exit 0 only if everything is right
+ *   hwrng-check              check; exit 0 only if everything is right
  *   hwrng-check --test [N]   the same, then run statistical tests on N blocks
  *                            of raw output (default 1000 blocks, 2.5 MB)
  *
@@ -26,8 +25,12 @@
  *   every oscillator on, internal jitter clock, normal speed. That code only
  *   runs if nothing enabled the generator earlier, and the Raspberry Pi boot
  *   firmware may enable it first. So this program reads RNG_CTRL itself and
- *   accepts exactly 0x00000001. Anything else is reprogrammed with Broadcom's
- *   own sequence (off, warm-up count, on) and read back.
+ *   accepts exactly 0x00000001. It only reads: it maps the registers
+ *   read-only and never changes them. With any other value it stops, and the
+ *   wallet does not start. (The randomness the wallet uses is the hardware
+ *   numbers hashed together with Linux's getrandom(), so rewriting the
+ *   register would add little, and it would be the only place this setup
+ *   goes around the kernel's driver.)
  *
  * It also checks that the generator Linux hands out on /dev/hwrng is this
  * Broadcom block (driver "bcm2835-rng", device tree "brcm,bcm2835-rng") and
@@ -54,7 +57,6 @@
 #define RNG_CTRL 0x0
 #define RNG_STATUS 0x4
 #define RNG_RBGEN 0x1
-#define RNG_WARMUP_COUNT 0x40000
 
 /* Test hooks: point these at a fake tree to exercise the program off a Pi. */
 static const char *sysfs = "/sys";
@@ -130,16 +132,18 @@ static unsigned long find_base(const char *name) {
   return base;
 }
 
-static volatile uint32_t *map_regs(unsigned long base) {
-  int fd = open(devmem, O_RDWR | O_SYNC | O_CLOEXEC);
+/* Read-only mapping: this program never writes to the generator. */
+static const volatile uint32_t *map_regs(unsigned long base) {
+  int fd = open(devmem, O_RDONLY | O_SYNC | O_CLOEXEC);
   if (fd < 0) fail("cannot open %s to read the generator's settings", devmem);
   long page = sysconf(_SC_PAGESIZE);
   unsigned long page_base = base & ~((unsigned long)page - 1);
-  void *map = mmap(NULL, (size_t)page, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+  void *map = mmap(NULL, (size_t)page, PROT_READ, MAP_SHARED, fd,
                    (off_t)page_base);
   close(fd);
   if (map == MAP_FAILED) fail("cannot map the generator's registers (%s)", strerror(errno));
-  return (volatile uint32_t *)((volatile uint8_t *)map + (base - page_base));
+  return (const volatile uint32_t *)((const volatile uint8_t *)map +
+                                     (base - page_base));
 }
 
 static void sleep_ms(long ms) {
@@ -147,29 +151,20 @@ static void sleep_ms(long ms) {
   nanosleep(&ts, NULL);
 }
 
-static void check_settings(volatile uint32_t *regs) {
+static void check_settings(const volatile uint32_t *regs) {
   int wait_ms = 1000;
   uint32_t ctrl = regs[RNG_CTRL / 4];
-  if (ctrl == RNG_RBGEN) {
-    printf("Generator settings: RNG_CTRL=0x%08x (on, all oscillators, internal "
-           "jitter clock, normal speed), as Broadcom's code sets it.\n", ctrl);
-  } else {
-    printf("Generator settings were RNG_CTRL=0x%08x; resetting them with "
-           "Broadcom's sequence.\n", ctrl);
-    regs[RNG_CTRL / 4] = 0;                    /* off */
-    regs[RNG_STATUS / 4] = RNG_WARMUP_COUNT;   /* discard the first numbers */
-    regs[RNG_CTRL / 4] = RNG_RBGEN;            /* on */
-    ctrl = regs[RNG_CTRL / 4];
-    if (ctrl != RNG_RBGEN) {
-      char v[16];
-      snprintf(v, sizeof(v), "0x%08x", ctrl);
-      fail("the generator's settings did not stick (RNG_CTRL=%s)", v);
-    }
-    printf("Generator settings now RNG_CTRL=0x%08x. Waiting for its warm-up "
-           "(about 10 seconds)...\n", ctrl);
-    /* 0x40000 numbers are discarded first, at roughly 34 us each. */
-    wait_ms = 30000;
+  if (ctrl != RNG_RBGEN) {
+    char v[16];
+    snprintf(v, sizeof(v), "0x%08x", ctrl);
+    fail("the generator is not set up the way Broadcom's code sets it up "
+         "(RNG_CTRL=%s, expected 0x00000001: on, all oscillators, internal "
+         "jitter clock, normal speed). This program only checks and does not "
+         "change it",
+         v);
   }
+  printf("Generator settings: RNG_CTRL=0x%08x (on, all oscillators, internal "
+         "jitter clock, normal speed), as Broadcom's code sets it.\n", ctrl);
 
   /* It must be producing: words should show up in its FIFO. */
   for (int i = 0; i < wait_ms / 10; i++) {
