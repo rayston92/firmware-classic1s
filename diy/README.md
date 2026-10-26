@@ -24,7 +24,7 @@ DIY build changes these things:
 | Changing build options reuses objects built with the old ones | The options are remembered in `legacy/.diy-flags`; when they change, everything is rebuilt and the libraries are recreated | `legacy/Makefile.include`, `legacy/Makefile`, `legacy/emulator/Makefile`, `legacy/firmware/protob/Makefile` |
 | Software key derivation leaves the public key empty (the secure element fills it on the device): wrong Ethereum/Tron addresses, all-zero SegWit witness keys | Public key filled after derivation | `legacy/firmware/fsm.c`, `legacy/firmware/signing.c` |
 | BIP-340 "internal" (untweaked) signing tweaks the key anyway; Nostr signing returns an unset buffer as the signature; Nostr encryption disabled | Untweaked signing and ECDH as on the device; Nostr works | `crypto/bip32.c`, `legacy/firmware/nostr.c` |
-| Cardano: some requests answer with keys, others read an unset key and crash the wallet | Every Cardano request is refused (Polkadot is refused too) | `legacy/firmware/messages.c` |
+| Cardano: some requests answer with keys, others read an unset key and crash the wallet | Every Cardano request is refused | `legacy/firmware/messages.c` |
 | Alephium: the transaction decoder does not follow Alephium's format exactly, so a transaction built by the computer could be shown with other outputs than the ones signed (also in 3.21) | Every Alephium request is refused (the decoder's memory-safety fixes from 3.21 are in anyway) | `legacy/firmware/messages.c` |
 | Auto-lock locks and blanks the screen underneath a waiting prompt, which a key press can still confirm; delay 0 ("never") locks constantly; the app's auto-lock setting does nothing | Locks only from the home screen and the menus, as Trezor does, and wipes the cached seed; a prompt stays on screen until answered; key presses count as use; 0 means never; the app's setting applies | `legacy/firmware/layout2.c`, `legacy/firmware/protect.c`, `legacy/firmware/fsm_msg_common.h` |
 | Requests for things the emulator doesn't have (raw secure-element commands, security-key credentials, firmware hash) hang the connection or crash the wallet | Refused with a message | `legacy/firmware/fsm_msg_common.h`, `legacy/firmware/fsm_msg_webauthn.h` |
@@ -249,14 +249,24 @@ Not yet checked on real hardware:
   OS kernels. Both are accepted.
 - The OneKey app itself driving the wallet. The test speaks the app's
   protocol through OneKey's Python library, not through the app.
-- Passphrase wallets, and signing for coins other than Bitcoin, Ethereum,
-  Tron, Solana and Nostr against independent results. Their code was reviewed
+- Entering a passphrase on the device (passphrase wallets' addresses are
+  checked, see `passphrase_check.py`), and signing for coins other than
+  Bitcoin, Ethereum, Tron, Solana and Nostr against independent results. Their code was reviewed
   and fixed, and ten of them were checked for correct addresses, but their
-  signatures were not compared with independent results. Cardano, Polkadot
-  and Alephium are refused by this build.
+  signatures were not compared with independent results. Cardano and
+  Alephium are refused by this build; Polkadot is not (its addresses and
+  signatures were not checked against independent results either).
 
 ## Known limits
 
+- If `hwrng-check` refuses the generator, the wallet service does not start:
+  the screen stays blank and the reason is in `journalctl -u diywallet`.
+  Nothing can be created, which is the safe outcome, but the screen doesn't
+  say why.
+- Coin signatures use deterministic nonces (RFC 6979 for ECDSA; BIP-340 and
+  Ed25519 derive theirs from the key and message), with random numbers only
+  for blinding. CoSi signing, a Trezor co-signing feature the OneKey app does
+  not use, takes a random nonce for every signature.
 - This branch is based on the `emulator` branch (firmware 3.12.0, June 2025).
   `master` (3.21.0) does not build as an emulator: its PIN and passphrase code
   now depends on the secure element. Fixes from 3.13 to 3.21 that apply to code
