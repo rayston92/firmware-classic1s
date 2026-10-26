@@ -214,13 +214,19 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
 - The checks above, the entropy check and the 28-item end-to-end test all
   pass on the final build, on x86-64 and on the ARM64 build under qemu-user.
 - Trezor's device test suite (`tests/device_tests`, with
-  `DIY_TEST_BUILD_WITH_DEBUG_LINK=1`): 354 tests pass, including Bitcoin and
+  `DIY_TEST_BUILD_WITH_DEBUG_LINK=1`, run file by file against a fresh wallet,
+  with a key press sent through the screen controller every 1.5 seconds for
+  screens that ignore the debug interface): 353 tests pass on this release,
+  including Bitcoin and
   Ethereum tests that compare addresses and signed transactions byte for byte
   with Trezor's expected values. The other runnable tests fail on differences
   in OneKey's screens and prompts, messages this firmware does not accept in
   that form, and error texts; none of the failures was a wrong address or
   signature. Some Bitcoin tests pass or fail from run to run on the same build
-  (a timing problem in the test harness with OneKey's screens).
+  (a timing problem in the test harness with OneKey's screens). An earlier
+  build had 354; the two Change PIN tests that differ fail the same way on
+  that build when it is run the same way (the key presses land during PIN
+  entry).
 - Every change in OneKey's later releases up to 3.21.0 was reviewed for fixes
   to code this build uses; those that apply are included (see the table
   above), and the whole change set was reviewed again independently.
