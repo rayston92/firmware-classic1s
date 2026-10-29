@@ -15,7 +15,7 @@ DIY build changes these things:
 | Stock emulator | DIY build (`DIY=1`) | Where |
 |---|---|---|
 | Random numbers come from a fixed formula starting at 0, so every emulator creates the **same recovery phrase** | Random numbers come from the Pi's Broadcom hardware generator (`/dev/hwrng`, 10:183 only; on the HAT build the driver must be `bcm2835-rng`). The first 0x40000 words (1 MiB) are discarded, Broadcom's warm-up count. NIST SP 800-90B start-up and continuous health tests on every byte, SHA-256 conditioning at 4x oversampling, then hashed with 32 bytes from `getrandom`. Any failure stops the wallet with "Wallet stopped" on the screen and the reason in the log; there is no fallback. | `legacy/emulator/diy/rand_hw.c`, `legacy/Makefile.include` |
-| (not applicable) | Before every start, as root: `hwrng-check` confirms `/dev/hwrng` is the Broadcom block (driver and device tree) and reads its control register through `/dev/mem`. Only `RNG_CTRL = 0x00000001` is accepted (on, all ring oscillators, internal jitter clock, normal speed), the setting Broadcom's own driver code writes; with anything else the wallet does not start. The check only reads (the registers are mapped read-only) and never changes the generator. | `diy/hwrng-check.c`, `diy/diywallet.service.in` |
+| (not applicable) | Before every start, as root: `hwrng-check` confirms `/dev/hwrng` is the Broadcom block (driver and device tree) and reads its control register through `/dev/mem`. Only `RNG_CTRL = 0x00000001` is accepted (on, all ring oscillators, internal jitter clock, normal speed), the setting Broadcom's own driver code writes; with anything else the wallet does not start. The check only reads (the registers are mapped read-only) and never changes the generator. | `diy/hwrng-check.c`, `diy/diywallet-check.service` |
 | Listens on every network interface | Listens on 127.0.0.1 only | `legacy/emulator/udp.c` |
 | Storage encryption salt is all zeros | Salt derived from the Pi's serial number | `legacy/emulator/diy/hw_salt.c`, `legacy/firmware/trezor.c` |
 | Screen size 256x128 on this branch | The real Classic size, 128x64 | `legacy/oled.h` |
@@ -70,9 +70,9 @@ Files in this folder:
 |---|---|
 | `usb-gadget.sh` | Gives the Pi's USB port the USB identity of a Classic 1S (1209:4F4B, manufacturer "DIY") |
 | `usb-relay.py` | Passes 64-byte USB packets to and from the wallet's local UDP port, unchanged; keeps going while the wallet restarts |
-| `diywallet.service.in`, `diywallet-usb.service` | systemd services; the wallet runs as its own user with only the screen, keys and hardware random number generator. Before it starts: swap off, text console detached from the framebuffers. No core dumps |
+| `diywallet.service.in`, `diywallet-check.service`, `diywallet-usb.service` | systemd services; the wallet runs as its own user with only the screen, keys and hardware random number generator. Before every start, `diywallet-check.service` runs as root: swap off, `hwrng-check`, text console detached from the framebuffers; if it fails, the wallet does not start. No core dumps |
 | `config.txt.snippet` | Screen, keys, USB device mode, Wi-Fi and Bluetooth off |
-| `install.sh` | Installs all of the above; builds and runs `hwrng-check` and stops if it fails; lets only the wallet read the generator; turns swap off |
+| `install.sh` | Installs all of the above; builds and runs `hwrng-check` and stops if it fails; lets only the wallet read the generator; turns swap off, for good (rpi-swap on Raspberry Pi OS 13, dphys-swapfile on older releases) |
 | `hwrng-check.c` | Root helper: checks, read-only, that the generator is the Pi's Broadcom block with Broadcom's register settings. `hwrng-check --test` also runs the FIPS 140-2 statistical tests on 1000 blocks of raw output |
 | `rng-assess.sh` | Collects 1,000,000 raw bytes for a NIST SP 800-90B entropy assessment (`ea_non_iid`) |
 | `set-home-icon.py` | Replaces the 24x24 home-screen icon in `legacy/gen/bitmaps.c` (the repo's own `generate.py` no longer reproduces that file) |
@@ -266,7 +266,7 @@ Not yet checked on real hardware:
 ## Known limits
 
 - If `hwrng-check` refuses the generator, the wallet service does not start:
-  the screen stays blank and the reason is in `journalctl -u diywallet`.
+  the screen stays blank and the reason is in `journalctl -u diywallet-check`.
   Nothing can be created, which is the safe outcome, but the screen doesn't
   say why.
 - Coin signatures use deterministic nonces (RFC 6979 for ECDSA; BIP-340 and

@@ -4,8 +4,8 @@
  *   - No core dumps, and no other process of the same user may attach a
  *     debugger (PR_SET_DUMPABLE 0). A crash must never write keys to the card.
  *   - All memory locked in RAM (mlockall), so it is never written to swap on
- *     the memory card. diywallet.service raises LimitMEMLOCK for this and
- *     also switches swap off before the wallet starts.
+ *     the memory card. diywallet.service raises LimitMEMLOCK for this;
+ *     diywallet-check.service switches swap off before every start.
  *
  * Licensed like the rest of the emulator: GNU LGPL v3 or later.
  */

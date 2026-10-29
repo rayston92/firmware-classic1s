@@ -65,7 +65,7 @@ else
   STORAGE="StateDirectory=diywallet\nStateDirectoryMode=0700\nWorkingDirectory=/var/lib/diywallet"
 fi
 sed "s|@STORAGE@|$STORAGE|" diy/diywallet.service.in | sed 's/\\n/\n/g' > /etc/systemd/system/diywallet.service
-install -m 644 diy/diywallet-usb.service /etc/systemd/system/diywallet-usb.service
+install -m 644 diy/diywallet-check.service diy/diywallet-usb.service /etc/systemd/system/
 
 CFG=/boot/firmware/config.txt
 [ -f "$CFG" ] || CFG=/boot/config.txt
@@ -79,8 +79,17 @@ sed -i '/^# >>> diywallet/,/^# <<< diywallet/d' "$CFG"
 sed "s|@RADIOS@|$RADIOS|" diy/config.txt.snippet | sed 's/\\n/\n/g' >> "$CFG"
 
 # No swap: it would let Linux write the wallet's memory to the memory card.
-# The wallet service also runs "swapoff -a" each time before it starts.
+# diywallet-check.service also runs "swapoff -a" before every start.
 swapoff -a || true
+# Raspberry Pi OS 13 (Trixie) and later: rpi-swap sets up swap at every boot,
+# by default compressed memory that moves idle pages to /var/swap on the card.
+# "Mechanism=none" switches it off and removes that file at the next boot.
+if [ -e /usr/lib/systemd/system-generators/rpi-swap-generator ] || [ -d /etc/rpi ]; then
+  install -d -m 755 /etc/rpi/swap.conf.d
+  printf '# Added by diy/install.sh: no swap on a wallet.\n[Main]\nMechanism=none\n' \
+    > /etc/rpi/swap.conf.d/90-diywallet-no-swap.conf
+fi
+# Raspberry Pi OS 12 (Bookworm) and earlier: dphys-swapfile.
 if command -v dphys-swapfile >/dev/null 2>&1; then
   dphys-swapfile swapoff || true
   systemctl disable --now dphys-swapfile.service 2>/dev/null || true

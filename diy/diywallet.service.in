@@ -1,7 +1,10 @@
 [Unit]
 Description=DIY hardware wallet (OneKey Classic firmware, DIY build)
-# Start after anything that could switch swap on, so the swapoff below wins.
-After=local-fs.target swap.target dphys-swapfile.service rpi-swap.service
+# Before every start, restarts included, diywallet-check.service runs as root:
+# swap off, the random number generator check (hwrng-check), text console off
+# the screen. If it fails, the wallet does not start.
+Requires=diywallet-check.service
+After=diywallet-check.service
 
 [Service]
 User=diywallet
@@ -9,28 +12,21 @@ Group=diywallet
 SupplementaryGroups=video input
 @STORAGE@
 EnvironmentFile=-/etc/diywallet.conf
-# As root ("+"), before the wallet starts:
-#  - switch off swap, so nothing in memory can be written to the memory card;
-#  - detach the text console from every framebuffer, so its cursor never draws
-#    over the wallet's screen.
-ExecStartPre=+/usr/sbin/swapoff -a
-#  - check that /dev/hwrng is the Pi's Broadcom generator and that its register
-#    settings are the ones Broadcom's code uses (see hwrng-check.c); the
-#    wallet does not start otherwise.
-ExecStartPre=+/opt/diywallet/hwrng-check
-ExecStartPre=+/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$$v/name" 2>/dev/null && echo 0 > "$$v/bind"; done; true'
 ExecStart=/opt/diywallet/wallet
 Restart=always
 RestartSec=2
 
-# Keep the wallet's memory out of swap on the memory card: swap is off (above),
+# Keep the wallet's memory out of swap on the memory card: swap is off (install.sh and
+# diywallet-check.service),
 # the wallet locks its memory in RAM, and memory cgroups (where enabled) forbid
 # swapping it. No core dumps, ever.
 MemorySwapMax=0
 LimitMEMLOCK=infinity
 LimitCORE=0
 # Only what it needs: the screen, the keys, the hardware random number
-# generator, and a socket on this Pi.
+# generator, and a socket on this Pi. DevicePolicy= applies to every program
+# in this service, even ones run as root; that is why the checks above have a
+# service of their own.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

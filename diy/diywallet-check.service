@@ -1,0 +1,24 @@
+[Unit]
+Description=DIY hardware wallet: checks before the wallet starts
+# diywallet.service requires this service, so these steps run, as root, before
+# every start of the wallet, restarts included. If one fails, the wallet does
+# not start.
+#
+# They have their own service because the wallet's device lockdown
+# (DevicePolicy=closed in diywallet.service) covers every program in that
+# service, even ones run as root: swapoff could not open the swap device and
+# hwrng-check could not open /dev/mem.
+#
+# Run after anything that could switch swap on, so the swapoff below wins.
+After=local-fs.target swap.target dphys-swapfile.service rpi-swap.service
+
+[Service]
+Type=oneshot
+# Switch off swap, so nothing in memory can be written to the memory card.
+ExecStart=/usr/sbin/swapoff -a
+# Check that /dev/hwrng is the Pi's Broadcom generator and that its register
+# settings are the ones Broadcom's code uses (see hwrng-check.c).
+ExecStart=/opt/diywallet/hwrng-check
+# Detach the text console from every framebuffer, so its cursor never draws
+# over the wallet's screen.
+ExecStart=/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$$v/name" 2>/dev/null && echo 0 > "$$v/bind"; done; true'
