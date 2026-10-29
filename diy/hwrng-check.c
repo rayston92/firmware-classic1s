@@ -111,24 +111,49 @@ static void check_identity(char *name, size_t len) {
   if (!found) fail("the generator's device tree entry is not " COMPATIBLE "%s", "");
 }
 
-/* Physical address of the generator's registers, from /proc/iomem. */
+/* Physical address of the generator's registers, from /proc/iomem.
+ *
+ * Current kernels label the region claimed by the driver with the device
+ * name followed by the device-tree node name, e.g.
+ *     3f104000-3f10400f : rng@7e104000
+ *       3f104000-3f10400f : 3f104000.rng rng@7e104000
+ * Older kernels write just "3f104000.rng". Both are accepted: the label must
+ * be the device name, alone or followed by a space. */
 static unsigned long find_base(const char *name) {
-  char path[512], line[512], want[300];
+  char path[512], line[512];
   snprintf(path, sizeof(path), "%s/iomem", procfs);
-  snprintf(want, sizeof(want), " : %s", name);
   FILE *f = fopen(path, "r");
   if (!f) fail("cannot read %s", path);
-  unsigned long base = 0;
+  size_t nlen = strlen(name);
+  unsigned long base = 0, end = 0;
   while (fgets(line, sizeof(line), f)) {
     line[strcspn(line, "\n")] = 0;
-    char *hit = strstr(line, want);
-    if (hit && hit[strlen(want)] == 0) {
-      base = strtoul(line + strspn(line, " "), NULL, 16);
-      break;
+    char *label = strstr(line, " : ");
+    if (!label) continue;
+    label += 3;
+    if (strncmp(label, name, nlen) != 0 || (label[nlen] != 0 && label[nlen] != ' ')) {
+      continue;
     }
+    char *p = line + strspn(line, " ");
+    base = strtoul(p, &p, 16);
+    if (*p == '-') end = strtoul(p + 1, NULL, 16);
+    break;
   }
   fclose(f);
-  if (!base) fail("cannot find the registers of %s in /proc/iomem", name);
+  if (!base) {
+    fail("cannot find the registers of %s in /proc/iomem (run this as root, "
+         "with sudo)", name);
+  }
+  if (end && end < base + 0xb) {
+    fail("the register range of %s in /proc/iomem is too small", name);
+  }
+  /* A device-tree device is named after its address, e.g. 3f104000.rng:
+   * the two must agree. */
+  char *dot = NULL;
+  unsigned long named = strtoul(name, &dot, 16);
+  if (dot && *dot == '.' && dot != name && named != base) {
+    fail("the registers in /proc/iomem do not match the generator's name (%s)", name);
+  }
   return base;
 }
 
