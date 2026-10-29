@@ -1,3 +1,14 @@
+DIY build of the OneKey app (app-monorepo tag v6.6.3) for a self-built wallet:
+
+1. Skip the genuine-device check. A self-built device has no OneKey factory
+   certificate, so the check can never pass.
+2. Never offer or force a firmware update. The app cannot install firmware on
+   a self-built device, and the DIY firmware reports an older OneKey firmware
+   version, so without this the app forces an update while adding the device
+   and never gets past it.
+
+Apply in the app-monorepo folder with: git apply app-skip-genuine-check.patch
+
 --- a/packages/shared/src/utils/deviceUtils.ts
 +++ b/packages/shared/src/utils/deviceUtils.ts
 @@ -289,7 +289,9 @@
@@ -11,3 +22,21 @@
  }
  
  async function getDeviceTypeFromFeatures({
+--- a/packages/kit-bg/src/services/ServiceFirmwareUpdate/ServiceFirmwareUpdate.ts
++++ b/packages/kit-bg/src/services/ServiceFirmwareUpdate/ServiceFirmwareUpdate.ts
+@@ -1687,6 +1687,15 @@
+     toFirmwareType: EFirmwareType | undefined;
+     forceUpdate?: boolean;
+   }) {
++    // DIY build: the app cannot install firmware on a self-built device (you
++    // build it and install it on the Raspberry Pi yourself), so never offer
++    // or force a firmware, Bluetooth or bootloader update. Without this,
++    // adding the device forces an update that can never finish, because the
++    // DIY firmware reports an older OneKey firmware version.
++    const isDiyBuild = true;
++    if (isDiyBuild) {
++      return { hasUpgradeForce: false, hasUpgrade: false };
++    }
+     let hasUpgradeForce = false;
+     let hasUpgrade = false;
+     switch (releasePayload?.status) {

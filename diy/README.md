@@ -76,7 +76,7 @@ Files in this folder:
 | `hwrng-check.c` | Root helper: checks, read-only, that the generator is the Pi's Broadcom block with Broadcom's register settings. `hwrng-check --test` also runs the FIPS 140-2 statistical tests on 1000 blocks of raw output |
 | `rng-assess.sh` | Collects 1,000,000 raw bytes for a NIST SP 800-90B entropy assessment (`ea_non_iid`) |
 | `set-home-icon.py` | Replaces the 24x24 home-screen icon in `legacy/gen/bitmaps.c` (the repo's own `generate.py` no longer reproduces that file) |
-| `app-skip-genuine-check.patch` | For the OneKey app (tag v6.6.3): skips the genuine-device check, which a self-built device can never pass |
+| `app-skip-genuine-check.patch` | For the OneKey app (tag v6.6.3): skips the genuine-device check, which a self-built device can never pass, and never offers or forces a firmware update, which the app cannot install on a self-built device |
 
 ## Build and install on the Pi
 
@@ -242,7 +242,17 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
 - Every change in OneKey's later releases up to 3.21.0 was reviewed for fixes
   to code this build uses; those that apply are included (see the table
   above), and the whole change set was reviewed again independently.
-- `app-skip-genuine-check.patch` applies to app-monorepo tag v6.6.3.
+- `app-skip-genuine-check.patch` applies to app-monorepo tag v6.6.3 and the
+  two changed files still parse. Its second change comes from the second
+  real-Pi report (29 October 2026): adding the device stopped at "Firmware
+  check" with "USB required for upgrade". The firmware reports OneKey version
+  3.12.0, OneKey's server lists 3.21.0 for the Classic 1S, and during
+  onboarding the app forces any update more than two minor versions behind
+  (`FIRMWARE_ONBOARDING_MAX_VERSIONS_BEHIND = 2`) and hides Skip. The update
+  can never run on this device: the app looks for a USB device with a serial
+  number to flash, and the DIY USB identity has none (on purpose), nor could
+  it install OneKey's firmware here anyway. Read from the v6.6.3 source and
+  SDK 1.2.7; the patched app has not yet been run against the wallet.
 - `set-home-icon.py` reproduces the existing icon data byte for byte.
 
 First reports from a real Raspberry Pi Zero 2 W with the Waveshare HAT (one
