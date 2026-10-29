@@ -22,3 +22,9 @@ ExecStart=/opt/diywallet/hwrng-check
 # Detach the text console from every framebuffer, so its cursor never draws
 # over the wallet's screen.
 ExecStart=/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$$v/name" 2>/dev/null && echo 0 > "$$v/bind"; done; true'
+# Switch the OLED on. With the DRM driver for the screen (ssd130x), a
+# framebuffer the text console isn't using stays switched off until something
+# unblanks it, so the wallet's pictures would never reach the screen. That is
+# the usual case on Raspberry Pi OS, where the HDMI framebuffer is /dev/fb0
+# and the OLED /dev/fb1. (The wallet also does this itself when it starts.)
+ExecStart=/bin/sh -c 'for f in /sys/class/graphics/fb*; do case "$$(cat "$$f/name" 2>/dev/null)" in *sh1106*|*ssd130x*) echo 0 > "$$f/blank" && echo "Screen $${f##*/} ($$(cat "$$f/name")) switched on.";; esac; done; true'

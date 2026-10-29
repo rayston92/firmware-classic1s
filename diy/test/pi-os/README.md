@@ -9,9 +9,16 @@ systemd 257).
 
 ## What an emulated Pi cannot show
 
-- The screen, the joystick and the keys: QEMU does not apply the `config.txt`
-  overlays, so there is no SH1106 screen and no gpio keys. The wallet draws on
-  QEMU's framebuffer instead (`DIY_OLED_FB=/dev/fb0`, emulator only).
+- The screen itself: QEMU's Pi has no working SPI or I2C controller, so the
+  SH1106 cannot be attached the way the HAT attaches it, and QEMU ignores
+  `config.txt`. For most stages the wallet draws on QEMU's framebuffer
+  (`DIY_OLED_FB=/dev/fb0`, emulator only). Stage H instead puts the real
+  screen driver (`ssd130x`) on a bit-banged I2C bus on two spare GPIO pins
+  (`oled-test.dts`): nothing answers on that bus, but every message the
+  driver sends can be counted, so it shows whether the wallet's pictures
+  reach the screen, not what they look like.
+- Pressing the joystick and keys: the `gpio-key` overlays load (stage H)
+  and the wallet opens their input devices, but QEMU cannot press them.
 - The generator itself: `/dev/hwrng`, the `bcm2835-rng` driver and the
   `/proc/iomem` entry are the real kernel's, but the numbers and the
   `RNG_CTRL` value come from QEMU's model of the chip, not from the Pi's
@@ -31,7 +38,8 @@ systemd 257).
 | `user-data` | cloud-init settings standing in for Raspberry Pi Imager's (host name `diywallet`, user `you`, SSH on). Test-only password |
 | `step4.sh` | Step 4, "Build the firmware", word for word as the user `you`, in a chroot of the image |
 | `boot.sh` | Starts the image in QEMU |
-| `guide-step5.sh` | Runs at boot inside the image (installed as `/usr/local/sbin/guide-step5.sh` with a oneshot service) and goes through step 5 across the reboots the guide asks for, plus checks of the services; stages A to G, logged to `/var/log/guide-step5.log` |
+| `guide-step5.sh` | Runs at boot inside the image (installed as `/usr/local/sbin/guide-step5.sh` with a oneshot service) and goes through step 5 across the reboots the guide asks for, plus checks of the services; stages A to H, logged to `/var/log/guide-step5.log` |
+| `oled-test.dts` | Stage H only: the SH1106 driver on a bit-banged I2C bus on GPIO 22/23, applied at run time with `dtoverlay` |
 | `usbhost.py` | The computer's side of the USB link, with the kernel's usbdevfs only: the device's identity, the Windows (WinUSB) descriptors, and an Initialize → Features exchange, over USB or straight to the wallet's local port |
 
 Preparing the image was done by hand: unpack it into an 8 GB sparse file, add
@@ -60,10 +68,17 @@ the kernel options QEMU needs (no USB FIQ, no hardware watchdog).
 - F, G: a fresh install (user, group, rule and services removed first): the
   generator ends up readable by the `diywallet` group only, and the wallet
   starts after a restart.
+- H: the `gpio-key` lines from `config.txt` and `oled-test.dts`, applied at
+  run time with `dtoverlay`. With the HDMI framebuffer as `/dev/fb0` (here the
+  firmware's, on a Pi the KMS driver's) and the OLED as `/dev/fb1`, the
+  screen driver is reloaded before each case so the screen starts as after
+  boot, and the I2C messages are counted: before the fix, then with only the
+  new check service, only the new wallet, and both after `install.sh`.
 
 ## What it found on 29 October 2026
 
-All three would have stopped the wallet on every Pi; all three are fixed.
+The first three would have stopped the wallet on every Pi; the fourth left
+the screen dark on many. All four are fixed.
 
 1. `hwrng-check` could not find the generator in `/proc/iomem`, because
    current kernels label the entry `3f104000.rng rng@7e104000`. (This one was
@@ -76,6 +91,13 @@ All three would have stopped the wallet on every Pi; all three are fixed.
    `KERNEL=="hwrng"`, but the kernel calls the device `hw_random`. The rule
    now matches `hw_random`, and `install.sh` checks that the `diywallet` user
    can read the generator.
+4. The screen stayed dark (first reported from a real Pi, then reproduced in
+   stage H). With Raspberry Pi OS's HDMI driver, the OLED becomes `/dev/fb1`
+   and the text console stays on `/dev/fb0`. `ssd130x` leaves a framebuffer
+   the console doesn't use switched off until it is unblanked, and the wallet
+   only wrote pixels: in stage H the driver sent nothing at all. Now
+   `diywallet-check.service` unblanks it before every start (enough without
+   rebuilding), and the wallet does too when it opens it.
 
 It also found that Raspberry Pi OS 13 keeps swap on through rpi-swap, by
 default compressed memory that writes idle pages to `/var/swap` on the card;

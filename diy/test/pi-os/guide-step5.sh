@@ -170,6 +170,57 @@ G)
   echo "=== GUIDE-STEP5 FRESH DONE"
   systemctl poweroff
   ;;
+H)
+  echo "--- Screen and keys through the real drivers: overlays applied at run time (QEMU ignores config.txt)"
+  systemctl stop diywallet-usb diywallet
+  for k in "5 105 joystick-left" "26 106 joystick-right" "6 103 joystick-up" "19 108 joystick-down" "13 28 joystick-press" "21 28 key1" "16 1 key3"; do
+    set -- $k; dtoverlay gpio-key gpio=$1 keycode=$2 label=$3
+  done
+  sleep 3; echo "key devices: $(grep -c -i 'N: Name="button@' /proc/bus/input/devices) ($(grep -o 'N: Name="button@[0-9a-f]*"' /proc/bus/input/devices | tr '\n' ' '))"
+  dtoverlay -d /root oled-test; sleep 10
+  for f in /sys/class/graphics/fb*; do echo "${f##*/}: $(cat $f/name)"; done
+  dmesg | grep -i -E "ssd130x|fb[0-9]+:" | tail -4
+  OLED=$(grep -l -E "sh1106|ssd130x" /sys/class/graphics/fb*/name | head -1 | xargs dirname)
+  BUS=$(ls -d /sys/bus/i2c/devices/*-003c | head -1 | sed 's|.*/||; s|-.*||')
+  DRI=$(grep -l ssd130x /sys/kernel/debug/dri/*/name | head -1 | xargs dirname)
+  T=/sys/kernel/tracing; echo 1 > $T/events/i2c/i2c_write/enable
+  echo "OLED framebuffer: $OLED, I2C bus $BUS, DRM debug dir $DRI"
+  state() { echo "crtc $(grep -o -m1 'active=[01]' $DRI/state), plane $(grep -m1 -o 'fb=[0-9]*' $DRI/state)"; }
+  fresh() {  # reload the screen driver, so the screen is as just after boot: never switched on
+    echo $BUS-003c > /sys/bus/i2c/drivers/ssd130x-i2c/unbind; sleep 1; echo $BUS-003c > /sys/bus/i2c/drivers/ssd130x-i2c/bind; sleep 3
+    OLED=$(grep -l -E "sh1106|ssd130x" /sys/class/graphics/fb*/name | head -1 | xargs dirname)
+    DRI=$(grep -l ssd130x /sys/kernel/debug/dri/*/name | head -1 | xargs dirname)
+  }
+  run() {  # $1 = label; the wallet and check service must already be in place
+    systemctl stop diywallet; fresh; echo > $T/trace
+    echo "== $1"; echo "screen ${OLED##*/} ($(cat $OLED/name)) before the start: $(state)"
+    systemctl daemon-reload; systemctl start diywallet; sleep 25
+    pid=$(systemctl show diywallet -p MainPID --value)
+    echo "wallet: $(systemctl is-active diywallet) ($(cmp -s /opt/diywallet/wallet /root/wallet-new && echo new || echo old) program, $(grep -q blank /etc/systemd/system/diywallet-check.service && echo new || echo old) check service), opened: $(ls -l /proc/$pid/fd 2>/dev/null | grep -o '/dev/[a-z]*[0-9]*' | sort -u | tr '\n' ' ')"
+    echo "after 25 s: $(state)"
+    n=$((n+1)); cp $T/trace /var/log/oled-trace-$n.txt
+    awk -v b="i2c-$BUS" '$0 ~ "i2c_write: "b" " { match($0,/l=[0-9]+/); l=substr($0,RSTART+2,RLENGTH-2)
+        if ($0 ~ /\[80-af\]/) on++; else if ($0 ~ / f=4000 /) { d++; db+=l } else if ($0 ~ /l=1 \[40\]/) h++; else c++ }
+      END {printf "sent to the screen: display-on %d time(s), %d commands, %d picture-data messages (%d bytes)\n", on, c, d, db}' $T/trace
+    journalctl -u diywallet-check -b --no-pager -o cat --since "-30s" | grep -i "switched on" | tail -1
+  }
+  oldcheck() { cp /root/check-old.service /etc/systemd/system/diywallet-check.service; }
+  newcheck() { cp /home/you/wallet/diy/diywallet-check.service /etc/systemd/system/diywallet-check.service; }
+  systemctl stop diywallet
+  oldcheck; install -m 755 /root/wallet-old /opt/diywallet/wallet
+  run "1. before the fix (check service and wallet from 1f469eab8)"
+  systemctl stop diywallet; newcheck
+  run "2. new check service only (no rebuild)"
+  systemctl stop diywallet; oldcheck; install -m 755 /root/wallet-new /opt/diywallet/wallet
+  run "3. new wallet only"
+  systemctl stop diywallet
+  as_you 'cd ~/wallet && sudo ./diy/install.sh --keep-radios' | tail -2
+  run "4. after the update and install, as a user would"
+  echo 0 > $T/events/i2c/i2c_write/enable
+  echo J > $STATE/stage
+  echo "=== GUIDE-STEP5 SCREEN DONE"
+  systemctl poweroff
+  ;;
 *)
   echo "=== GUIDE-STEP5 DONE (nothing left)"
   ;;

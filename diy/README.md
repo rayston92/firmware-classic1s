@@ -133,9 +133,11 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
   systemd, `hwrng-check` on the real kernel's `/proc/iomem` and `/dev/mem`,
   swap off after every restart, and USB through a software USB controller
   (identity, WinUSB descriptors, Initialize and Features, unplugging, wallet
-  restarts). It found three bugs that stopped the wallet on every Pi, all
-  fixed; see `diy/test/pi-os/README.md`. The screen, keys, real generator and
-  real USB port are not part of that test.
+  restarts), and the screen driver (`ssd130x`) and key overlays through a
+  stand-in I2C bus on spare GPIO pins. It found three bugs that stopped the
+  wallet on every Pi and reproduced a fourth, reported from a real Pi, that
+  left the screen dark; all fixed, see `diy/test/pi-os/README.md`. The real
+  screen, generator and USB port are not part of that test.
 - Two fresh `DIY=1` wallets got different recovery phrases. The stock emulator gave
   the same phrase both times.
 - `hwrng-check` against a simulated Pi (fake sysfs, `/proc/iomem` and
@@ -243,6 +245,22 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
 - `app-skip-genuine-check.patch` applies to app-monorepo tag v6.6.3.
 - `set-home-icon.py` reproduces the existing icon data byte for byte.
 
+First reports from a real Raspberry Pi Zero 2 W with the Waveshare HAT (one
+user, 29 October 2026, Raspberry Pi OS 13):
+
+- `hwrng-check` passed and `hwrng-check --test` printed `RESULT: OK`. The
+  test only runs after the settings check, so on that board the generator is
+  Broadcom's, its registers can be read through `/dev/mem`, `RNG_CTRL` is
+  0x00000001, and its raw output passed FIPS 140-2.
+- The screen was driven by `ssd130x` (DRM) as `/dev/fb1`, with the HDMI
+  framebuffer at `/dev/fb0`, and stayed dark: nothing switched it on. A DRM
+  framebuffer that the text console doesn't use stays off until it is
+  unblanked, and the wallet only wrote pixels. Fixed:
+  `diywallet-check.service` unblanks the OLED framebuffer before every
+  start, and the wallet does too when it opens it. Reproduced and checked on
+  the emulated Pi with the real `ssd130x` driver (see `diy/test/pi-os/`).
+- After that the screen showed the wallet and the joystick and keys worked.
+
 Not yet checked on real hardware:
 
 - Building natively on a Raspberry Pi and how long it takes on a Pi Zero 2 W
@@ -251,19 +269,18 @@ Not yet checked on real hardware:
   at least 4 bits per byte; if the real source were weaker, they would stop the
   wallet (safe, but it would need looking into). Measure it with
   `rng-assess.sh` and NIST's `ea_non_iid`.
-- What `RNG_CTRL` the Raspberry Pi boot firmware leaves on a Pi Zero 2 W. If
-  it is not 0x00000001, `hwrng-check` fails and the wallet won't start, which
-  is the safe outcome. (Mapping the RNG block through `/dev/mem` works on the
-  current Raspberry Pi OS kernel: checked on the emulated Pi, where the value
-  comes from QEMU's model of the chip.)
+- `RNG_CTRL` on other boards and firmware versions (0x00000001 on the first
+  one). If it differs, `hwrng-check` fails and the wallet won't start, which
+  is the safe outcome.
 - The `sh1106-spi` framebuffer orientation on the Waveshare HAT.
 - The USB gadget on a Pi's own USB port: endpoint addresses as seen by the
   computer (`lsusb -v` should show 0x81 and 0x01; the software controller
   used in the emulated Pi numbers them 0x81 and 0x02), Windows actually
   binding WinUSB (the descriptors were read back correctly in the emulated
   Pi), and the OneKey app finding the device over WebUSB.
-- Whether `fb_sh1106` or `ssd130x` binds to the screen on current Raspberry Pi
-  OS kernels. Both are accepted.
+- Whether `fb_sh1106` ever binds to the screen instead of `ssd130x` on current
+  Raspberry Pi OS kernels (`ssd130x` did on the first board). Both are
+  accepted.
 - The OneKey app itself driving the wallet. The test speaks the app's
   protocol through OneKey's Python library, not through the app.
 - Entering a passphrase on the device (passphrase wallets' addresses are

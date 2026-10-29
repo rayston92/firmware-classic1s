@@ -71,7 +71,15 @@ static int find_oled_fb(void) {
 
 void oledInit(void) {
   /* May already be open: a message can be shown before the firmware starts. */
-  if (fb_fd < 0) fb_fd = find_oled_fb();
+  if (fb_fd < 0) {
+    fb_fd = find_oled_fb();
+    /* Switch the screen on. The DRM driver (ssd130x) leaves a framebuffer
+     * switched off until something unblanks it or the text console takes it
+     * over; with the HDMI framebuffer at /dev/fb0 the console stays there,
+     * and everything drawn here would never reach the OLED. Harmless for
+     * fbtft's fb_sh1106, which simply sends "display on". */
+    ioctl(fb_fd, FBIOBLANK, FB_BLANK_UNBLANK);
+  }
 
   struct fb_var_screeninfo var;
   struct fb_fix_screeninfo fix;

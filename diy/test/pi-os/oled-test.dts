@@ -1,0 +1,26 @@
+// Emulator test only: the SH1106 driver (ssd130x, DRM) on a bit-banged I2C
+// bus on GPIO 22/23, because QEMU's Pi has no SPI or I2C controller. Nothing
+// answers on the bus; SDA reads low, which the I2C code takes as an ACK, so
+// every write "succeeds" and can be counted with the i2c trace events.
+/dts-v1/;
+/plugin/;
+/ {
+	compatible = "brcm,bcm2835";
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			i2c_oled_test: i2c@22 {
+				compatible = "i2c-gpio";
+				gpios = <&gpio 22 6 &gpio 23 0>; /* SDA open drain, SCL push-pull */
+				i2c-gpio,scl-output-only;
+				i2c-gpio,delay-us = <1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				oled@3c {
+					compatible = "sinowealth,sh1106";
+					reg = <0x3c>;
+				};
+			};
+		};
+	};
+};
