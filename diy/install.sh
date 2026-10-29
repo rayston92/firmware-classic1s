@@ -55,9 +55,16 @@ fi
 id diywallet >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin diywallet
 
 # Only the wallet may read the hardware random number generator directly.
-echo 'KERNEL=="hwrng", GROUP="diywallet", MODE="0440"' > /etc/udev/rules.d/90-diywallet-hwrng.rules
+# The kernel calls this device "hw_random"; "hwrng" is only its file in /dev.
+echo 'SUBSYSTEM=="misc", KERNEL=="hw_random", GROUP="diywallet", MODE="0440"' > /etc/udev/rules.d/90-diywallet-hwrng.rules
 udevadm control --reload-rules || true
-udevadm trigger --name-match=hwrng || true
+udevadm trigger --name-match=/dev/hwrng || true
+udevadm settle || true
+if [ "$(stat -c '%G %a' /dev/hwrng)" != "diywallet 440" ] ||
+  ! runuser -u diywallet -- head -c 32 /dev/hwrng >/dev/null 2>&1; then
+  echo "Install stopped: the wallet's user cannot read /dev/hwrng ($(stat -c '%U:%G %a' /dev/hwrng))." >&2
+  exit 1
+fi
 
 if [ "$RAM_ONLY" -eq 1 ]; then
   STORAGE="RuntimeDirectory=diywallet\nRuntimeDirectoryMode=0700\nWorkingDirectory=/run/diywallet"
