@@ -68,6 +68,11 @@ To test the ARM64 build under qemu-user, build both shims with
 | `passphrase_check.py` | 12-, 18- and 24-word phrases with empty, plain, 50-byte and non-English passphrases give the same Bitcoin and Ethereum addresses as independent derivation; a 51-byte passphrase is refused, not cut short |
 | `autolock_check.py` | Auto-lock from the home screen and the menus, an open prompt staying usable, the delay set from the app (production build, about 7 minutes) |
 
+`pi-os/` rehearses the guide's steps 3 to 5 on the real Raspberry Pi OS image
+(its kernel, systemd and udev) on an emulated Pi, including USB through a
+software USB controller; see `pi-os/README.md` for what it checks, what it
+cannot show, and the three bugs it found.
+
 `run-check.sh` starts a wallet, runs one of these against it and stops it, in
 its own network namespace. `unlock_then.py` enters the PIN on the wallet's
 screen (`pin_entry.py` reads the digit wheel from the screenshots) and then

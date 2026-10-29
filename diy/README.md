@@ -126,6 +126,16 @@ Checked on x86-64 Linux (Ubuntu 24.04, gcc 13), unless noted:
   (the compiler version on Raspberry Pi OS Trixie), and that ARM64 binary runs
   under qemu-user against the simulated screen and keys: menus, Chinese fonts,
   joystick, and a KEY3 device that appears only after start-up.
+- The guide's steps 3 to 5 on the real Raspberry Pi OS 13 image (kernel
+  6.18.50+rpt-rpi-v8, systemd 257) on an emulated Pi (QEMU `raspi3b`), with
+  `diy/test/pi-os/`: the build as the guide's user, the install (fresh, over
+  an earlier install, `--ram-only`, radios off), both services under the real
+  systemd, `hwrng-check` on the real kernel's `/proc/iomem` and `/dev/mem`,
+  swap off after every restart, and USB through a software USB controller
+  (identity, WinUSB descriptors, Initialize and Features, unplugging, wallet
+  restarts). It found three bugs that stopped the wallet on every Pi, all
+  fixed; see `diy/test/pi-os/README.md`. The screen, keys, real generator and
+  real USB port are not part of that test.
 - Two fresh `DIY=1` wallets got different recovery phrases. The stock emulator gave
   the same phrase both times.
 - `hwrng-check` against a simulated Pi (fake sysfs, `/proc/iomem` and
@@ -241,16 +251,17 @@ Not yet checked on real hardware:
   at least 4 bits per byte; if the real source were weaker, they would stop the
   wallet (safe, but it would need looking into). Measure it with
   `rng-assess.sh` and NIST's `ea_non_iid`.
-- What `RNG_CTRL` the Raspberry Pi boot firmware leaves on a Pi Zero 2 W, and
-  that `/dev/mem` mapping of the RNG block works on the current Raspberry Pi OS
-  kernel (its configuration has `CONFIG_STRICT_DEVMEM` off). If the value is
-  not 0x00000001, or the mapping doesn't work, `hwrng-check` fails and the
-  wallet won't start, which is the safe outcome.
+- What `RNG_CTRL` the Raspberry Pi boot firmware leaves on a Pi Zero 2 W. If
+  it is not 0x00000001, `hwrng-check` fails and the wallet won't start, which
+  is the safe outcome. (Mapping the RNG block through `/dev/mem` works on the
+  current Raspberry Pi OS kernel: checked on the emulated Pi, where the value
+  comes from QEMU's model of the chip.)
 - The `sh1106-spi` framebuffer orientation on the Waveshare HAT.
-- The USB gadget on a Pi: endpoint addresses as seen by the computer
-  (`lsusb -v` should show 0x81 and 0x01), Windows driver binding (the
-  `DeviceInterfaceGUID` property is sent as REG_SZ, which FunctionFS supports),
-  and the OneKey app finding the device over WebUSB.
+- The USB gadget on a Pi's own USB port: endpoint addresses as seen by the
+  computer (`lsusb -v` should show 0x81 and 0x01; the software controller
+  used in the emulated Pi numbers them 0x81 and 0x02), Windows actually
+  binding WinUSB (the descriptors were read back correctly in the emulated
+  Pi), and the OneKey app finding the device over WebUSB.
 - Whether `fb_sh1106` or `ssd130x` binds to the screen on current Raspberry Pi
   OS kernels. Both are accepted.
 - The OneKey app itself driving the wallet. The test speaks the app's

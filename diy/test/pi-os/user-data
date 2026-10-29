@@ -1,0 +1,13 @@
+#cloud-config
+hostname: diywallet
+manage_etc_hosts: true
+users:
+- name: you
+  groups: users,adm,dialout,audio,netdev,video,plugdev,cdrom,games,input,gpio,spi,i2c,render,sudo
+  shell: /bin/bash
+  lock_passwd: false
+  passwd: $6$gxZZ0kkTejcyFwlj$JhyfnoKHrJORtYr/V7WSWoUts2OCzNsJYqBnsvd9FITGZqM0f8saPRoS3NhEQP5avwmUSJHWgGbt.qc5xDBH20
+  sudo: ALL=(ALL) NOPASSWD:ALL
+ssh_pwauth: true
+runcmd:
+- [systemctl, enable, --now, ssh]
